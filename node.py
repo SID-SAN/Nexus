@@ -36,31 +36,48 @@ from config import PEERS
 @app.post("/distributed_sum")
 def distributed_sum():
     total_start = 1
-    total_end = 1_500_000
+    total_end = 10  # use small number for testing
 
     total_nodes = len(PEERS) + 1
-    chunk_size = (total_end - total_start) // total_nodes
+    range_size = total_end - total_start
+    chunk_size = range_size // total_nodes
+    remainder = range_size % total_nodes
 
     results = []
     current_start = total_start
 
-    # Send chunks to peers
-    for peer in PEERS:
-        current_end = current_start + chunk_size
+    all_nodes = PEERS.copy()
 
-        logger.info(f"Sending chunk {current_start} to {current_end} to {peer}")
+    # Process peer chunks
+    for i in range(len(PEERS)):
+        extra = 1 if i < remainder else 0
+        current_end = current_start + chunk_size + extra
 
-        response = send_task(
-            peer,
-            {"start": current_start, "end": current_end}
-        )
+        chunk = {"start": current_start, "end": current_end}
 
-        results.append(response.get("result", 0))
+        assigned = False
+
+        for peer in all_nodes:
+            logger.info(f"Trying peer {peer} for chunk {chunk}")
+
+            response = send_task(peer, chunk)
+
+            if "error" not in response:
+                results.append(response.get("result", 0))
+                assigned = True
+                break
+            else:
+                logger.warning(f"Peer {peer} failed for chunk {chunk}")
+
+        if not assigned:
+            logger.warning(f"All peers failed. Executing locally {chunk}")
+            local_result = compute_range_sum(chunk["start"], chunk["end"])
+            results.append(local_result)
+
         current_start = current_end
 
-    # Local chunk (remaining part)
-    logger.info(f"Executing local chunk {current_start} to {total_end}")
-
+    # Local coordinator chunk (remaining portion)
+    logger.info(f"Executing coordinator chunk {current_start} to {total_end}")
     local_result = compute_range_sum(current_start, total_end)
     results.append(local_result)
 
