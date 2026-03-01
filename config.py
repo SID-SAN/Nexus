@@ -5,7 +5,8 @@ HOST = "127.0.0.1"
 PORT = int(os.getenv("PORT", 5001))
 
 PEERS = [
-    "http://127.0.0.1:5002"
+    "http://127.0.0.1:5002",
+    "http://127.0.0.1:5003",
 ]
 
 REQUEST_TIMEOUT = 10

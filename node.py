@@ -36,37 +36,37 @@ from config import PEERS
 @app.post("/distributed_sum")
 def distributed_sum():
     total_start = 1
-    total_end = 1_000_000
+    total_end = 1_500_000
 
-    # Split into 2 halves
-    mid = (total_start + total_end) // 2
+    total_nodes = len(PEERS) + 1
+    chunk_size = (total_end - total_start) // total_nodes
 
-    local_chunk = (total_start, mid)
-    remote_chunk = (mid, total_end)
+    results = []
+    current_start = total_start
 
-    logger.info(f"Local chunk: {local_chunk}")
-    logger.info(f"Remote chunk: {remote_chunk}")
+    # Send chunks to peers
+    for peer in PEERS:
+        current_end = current_start + chunk_size
 
-    # Execute remote chunk
-    peer = PEERS[0]
-    remote_response = send_task(
-        peer,
-        {"start": remote_chunk[0], "end": remote_chunk[1]}
-    )
+        logger.info(f"Sending chunk {current_start} to {current_end} to {peer}")
 
-    remote_result = remote_response.get("result", 0)
+        response = send_task(
+            peer,
+            {"start": current_start, "end": current_end}
+        )
 
-    # Execute local chunk
-    local_result = compute_range_sum(
-        local_chunk[0],
-        local_chunk[1]
-    )
+        results.append(response.get("result", 0))
+        current_start = current_end
 
-    final_result = local_result + remote_result
+    # Local chunk (remaining part)
+    logger.info(f"Executing local chunk {current_start} to {total_end}")
 
-    logger.info(f"Local result: {local_result}")
-    logger.info(f"Remote result: {remote_result}")
-    logger.info(f"Final result: {final_result}")
+    local_result = compute_range_sum(current_start, total_end)
+    results.append(local_result)
+
+    final_result = sum(results)
+
+    logger.info(f"Final aggregated result: {final_result}")
 
     return {
         "node": NODE_ID,
