@@ -1,9 +1,13 @@
 # node.py
-
+from bootstrap_client import register_self, fetch_peers
+from config import HOST, PORT
 from fastapi import FastAPI
 from config import NODE_ID
 from tasks import compute_range_sum
 from logger import setup_logger
+import threading
+import time
+from bootstrap_client import send_heartbeat
 
 app = FastAPI()
 logger = setup_logger(NODE_ID)
@@ -32,51 +36,53 @@ def execute_chunk(payload: dict):
 
 from network import send_task
 from config import PEERS
-
 @app.post("/distributed_sum")
 def distributed_sum():
-    total_start = 1
-    total_end = 10  # use small number for testing
 
-    total_nodes = len(PEERS) + 1
-    range_size = total_end - total_start
+    total_start = 1
+    total_end = 10  # keep small for testing
+
+    peers = fetch_peers()
+    logger.info(f"Discovered peers: {peers}")
+    
+    # Fetch live peers from bootstrap
+    peers = fetch_peers()
+
+    total_nodes = len(peers) + 1
+    range_size = total_end - total_start + 1
+
     chunk_size = range_size // total_nodes
     remainder = range_size % total_nodes
 
     results = []
     current_start = total_start
 
-    all_nodes = PEERS.copy()
-
-    # Process peer chunks
-    for i in range(len(PEERS)):
+    # Assign chunks to peers
+    for i, peer in enumerate(peers):
         extra = 1 if i < remainder else 0
         current_end = current_start + chunk_size + extra
 
         chunk = {"start": current_start, "end": current_end}
-
         assigned = False
 
-        for peer in all_nodes:
-            logger.info(f"Trying peer {peer} for chunk {chunk}")
+        logger.info(f"Trying peer {peer} for chunk {chunk}")
 
-            response = send_task(peer, chunk)
+        response = send_task(peer, chunk)
 
-            if "error" not in response:
-                results.append(response.get("result", 0))
-                assigned = True
-                break
-            else:
-                logger.warning(f"Peer {peer} failed for chunk {chunk}")
+        if "error" not in response:
+            results.append(response.get("result", 0))
+            assigned = True
+        else:
+            logger.warning(f"Peer {peer} failed for chunk {chunk}")
 
         if not assigned:
-            logger.warning(f"All peers failed. Executing locally {chunk}")
+            logger.warning(f"Executing failed chunk locally {chunk}")
             local_result = compute_range_sum(chunk["start"], chunk["end"])
             results.append(local_result)
 
         current_start = current_end
 
-    # Local coordinator chunk (remaining portion)
+    # Coordinator executes its own chunk (remaining portion)
     logger.info(f"Executing coordinator chunk {current_start} to {total_end}")
     local_result = compute_range_sum(current_start, total_end)
     results.append(local_result)
@@ -89,3 +95,17 @@ def distributed_sum():
         "node": NODE_ID,
         "final_result": final_result
     }
+
+@app.on_event("startup")
+def startup_event():
+    address = f"http://{HOST}:{PORT}"
+    register_self(address)
+    logger.info(f"Registered {NODE_ID} at {address}")
+
+    def heartbeat_loop():
+        while True:
+            send_heartbeat(address)
+            time.sleep(5)
+
+    thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    thread.start()
