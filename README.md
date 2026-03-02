@@ -1,204 +1,166 @@
-# Nexus
-
-## Version: v0.0.0  
-### Distributed Execution Core
+# Nexus v1.0.0
+## Internet-Aware Distributed Compute Network (Direct HTTP Model)
 
 ---
 
-## Overview
+## Vision
 
-Nexus v0 is a local multi-process distributed compute engine built from scratch.
+Nexus is a distributed computing framework designed to allow multiple student machines to pool their hardware resources and collaboratively execute computational workloads.
 
-It demonstrates:
+The goal is to transform idle personal computers into a shared compute network.
 
-- Multi-node distributed computation
-- Dynamic task splitting
-- Result aggregation
-- Peer-to-peer communication
-- Graceful failure handling
-- Chunk reassignment on peer failure
-- Local fallback execution
-
-This version focuses purely on building a stable distributed execution core.
+Version **v1.0.0** marks the first stable milestone:  
+Internet-backed peer discovery with distributed execution.
 
 ---
 
-## Architecture
+##  Architecture Overview
 
-- Peer-based model
-- Temporary coordinator per task
-- HTTP communication using FastAPI
-- Config-driven node identity
-- Dynamic chunk partitioning
-- Fault-tolerant execution
-- Structured logging
+Nexus v1.0.0 consists of two main layers:
+
+###  Distributed Compute Layer (Runs on Student Machines)
 
 Each node:
-- Runs independently
-- Listens on its own port
-- Can execute chunks
-- Can coordinate tasks
-- Can recover from peer failure
+- Runs a FastAPI server
+- Registers itself with a cloud bootstrap service
+- Fetches active peer list dynamically
+- Splits computational tasks
+- Sends chunks to peers
+- Aggregates results
+- Handles peer failures gracefully
+
+###  Cloud Bootstrap Layer (Discovery Service)
+
+The bootstrap server:
+- Maintains a registry of active nodes
+- Accepts node registrations
+- Removes inactive nodes via heartbeat timeout
+- Returns current peer list on request
+
+Bootstrap does NOT:
+- Execute tasks
+- Store computation results
+- Coordinate execution
+- Act as a relay
+
+It is purely a discovery layer.
+
+
+## Communication Model (v1.0.0)
+Node A → HTTP → Node B
+<br>
+Node B → HTTP → Node C
+
+
+- Direct REST-based peer-to-peer communication
+- Nodes communicate using HTTP POST requests
+- Distributed task chunks are executed across peers
+
+⚠ Limitation:<br>
+Nodes must be network-reachable.  
+Machines behind NAT without port forwarding cannot accept inbound traffic.
+
+This limitation will be addressed in v2.
 
 ---
 
-## How It Works
+## Features
 
-1. A node receives a distributed computation request.
-2. It determines total number of nodes (`peers + self`).
-3. It splits the task into equal chunks.
-4. It dispatches chunks to peers.
-5. If a peer fails, the chunk is reassigned.
-6. If all peers fail, the chunk executes locally.
-7. Results are aggregated.
-8. Final result is returned.
-
----
-
-## Features Implemented in v0
-
-- Multi-process distributed nodes
-- Dynamic chunk partitioning
-- Peer communication via HTTP
-- Graceful failure handling
-- Chunk reassignment on failure
-- Guaranteed correctness
+- Multi-node distributed computation
+- Dynamic peer discovery via cloud
+- Heartbeat-based liveness detection
+- Automatic chunk splitting
+- Fault-tolerant execution
+- Peer fallback on failure
 - Local fallback execution
-- Configurable node identity
-- Clean repository structure
+- Structured logging
+- Scalable node count
 
 ---
 
-## Not Included (By Design)
+## Running Nexus v1.0.0
 
-- Internet-wide node discovery
-- Bootstrap server
-- Resource-aware scheduling
-- Docker sandboxing
-- Security layer
-- Credit system
-- Decentralized governance
+###  Ensure Bootstrap Server Is Live
 
-These are planned for future versions.
+Example:
+```
+https://your-bootstrap-service.onrender.com
+```
+
 
 ---
 
-##  How To Run
+###  Start Multiple Nodes
 
-### Create Conda Environment
+Open separate terminals:
+<br>
+uvicorn node:app --port 5001
+<br>
+uvicorn node:app --port 5002
+<br>
+uvicorn node:app --port 5003
 
-```bash
-conda create -n nexus python=3.10
-conda activate nexus
-pip install fastapi uvicorn requests
-```
 
-### Start Multiple Nodes
-Open three separate terminals inside the project directory.<br>
-Terminal 1 — Node 1 (Coordinator)
-```
-$env:NODE_ID="node_1"
-python -m uvicorn node:app --port 5001
-```
-Terminal 2 — Node 2 (Coordinator)
-```
-$env:NODE_ID="node_1"
-python -m uvicorn node:app --port 5002
-```
-Terminal 3 — Node 3 (Coordinator)
-```
-$env:NODE_ID="node_1"
-python -m uvicorn node:app --port 5003
-```
-You should see:
-```
-Uvicorn running on http://127.0.0.1:500X
-```
-### Trigger Distributed Computation
-Open your browser and go to:
-```
-http://127.0.0.1:5001/docs
-```
-Then:
-
-1 Click POST /distributed_sum
-
-2 Click Try it out
-
-3 Click Execute
+Each node:
+- Registers to bootstrap
+- Fetches peer list
+- Starts heartbeat loop
 
 ---
 
-## What You Should Observe
+###  Verify Active Peers
 
-- Each node executes a different chunk.
-- Logs appear in all active terminals.
-- Results are aggregated.
-- The final result is returned by Node 1.
+Open:
+```
+http://localhost:5001/docs
+```
 
-This demonstrates real distributed execution.
 
----
+Execute:
 
-## Testing Fault Tolerance
+POST `/distributed_sum`
 
-To test system resilience:
-
-1. Stop one node (Ctrl + C in its terminal).
-2. Trigger `/distributed_sum` again.
-
-The system will:
-
-- Detect the failure  
-- Reassign the chunk  
-- Fall back to local execution if needed  
-- Still return the correct final result  
-
-Nexus v0 guarantees correctness even when peers fail.
+Expected behavior:
+- Each node processes a different chunk
+- Logs appear in all terminals
+- Results are aggregated
+- Final result returned by coordinator
 
 ---
 
-## Features in v0
+## Fault Tolerance
 
-- Multi-process distributed execution  
-- Dynamic scaling based on peer count  
-- Automatic chunk reassignment  
-- Fault recovery  
-- Local fallback execution  
-- Structured logging  
+If a peer fails during execution:
 
----
+- The system detects failure
+- Reassigns chunk to another peer
+- Falls back to local execution if necessary
+- Final result remains correct
 
-## Not Included (By Design)
-
-The following features are intentionally excluded from v0:
-
-- Internet-wide discovery  
-- Bootstrap server  
-- Resource-aware scheduling  
-- Docker sandboxing  
-- Security layer  
-- Credit system  
-- Decentralized governance  
-
-These are planned for future versions.
+Correctness is guaranteed even with partial node failure.
 
 ---
 
-## 🗺 Roadmap
+## Version History
 
-| Version | Focus |
-|----------|--------|
-| v0 | Distributed execution core |
-| v1 | Internet-ready hybrid peer model |
-| v2 | Resource-aware scheduling |
-| v3 | Secure sandbox execution |
-| v4 | Decentralized governance |
+| Version | Description |
+|----------|-------------|
+| v0.0.0 | Local multi-process distributed execution |
+| v1.0.0 | Internet-backed peer discovery + direct HTTP distributed execution |
 
 ---
 
-## Status
+## Current Status
 
-Nexus v0 is stable and frozen.
+Nexus v1.0.0 is stable and frozen.
 
-Future versions will build on this core without architectural rewrites.
+Discovery Layer: Cloud bootstrap  
+Transport Layer: Direct HTTP  
+Compute Layer: Distributed chunk execution  
+
+Next Evolution:
+Relay-based transport layer to enable NAT-safe internet-wide student networking.
+
+---
+
+Nexus is evolving from a distributed experiment into a real peer compute platform.
