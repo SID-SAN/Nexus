@@ -3,14 +3,24 @@ import json
 
 app = FastAPI()
 
+# active node connections
+connected_nodes = {}
+
+
 @app.get("/")
 def root():
     return {"message": "Relay server running"}
 
-connected_nodes = {}
+
+# NEW: node registry endpoint
+@app.get("/nodes")
+def get_nodes():
+    return {"nodes": list(connected_nodes.keys())}
+
 
 @app.websocket("/ws/{node_id}")
 async def websocket_endpoint(websocket: WebSocket, node_id: str):
+
     await websocket.accept()
 
     connected_nodes[node_id] = websocket
@@ -18,6 +28,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
     try:
         while True:
+
             data = await websocket.receive_text()
             message = json.loads(data)
 
@@ -30,5 +41,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 print(f"Target {target} not connected")
 
     except WebSocketDisconnect:
+
         print(f"Node disconnected: {node_id}")
         connected_nodes.pop(node_id, None)

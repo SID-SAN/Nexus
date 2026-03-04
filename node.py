@@ -1,32 +1,38 @@
-# node.py
-from bootstrap_client import register_self, fetch_peers
-from config import HOST, PORT
 from fastapi import FastAPI
-from config import NODE_ID
-from tasks import compute_range_sum
-from logger import setup_logger
-import threading
-import time
-from bootstrap_client import send_heartbeat
-from relay_client import connect_to_relay
 import asyncio
-from network import register_self, send_heartbeat
+
+from config import NODE_ID
+from logger import setup_logger
+from compute import compute_range_sum
+
+from relay_client import connect_to_relay
+from relay_task import send_chunk_to_node
+from relay_registry import fetch_nodes
 
 
 app = FastAPI()
 logger = setup_logger(NODE_ID)
 
+
+# -----------------------------
+# Health endpoint
+# -----------------------------
 @app.get("/health")
 def health():
     logger.info("Health check received")
     return {"status": "ok", "node": NODE_ID}
 
+
+# -----------------------------
+# Execute compute chunk
+# -----------------------------
 @app.post("/execute_chunk")
 def execute_chunk(payload: dict):
+
     start = payload.get("start")
     end = payload.get("end")
 
-    logger.info(f"Executing chunk: {start} to {end}")
+    logger.info(f"Executing chunk {start}-{end}")
 
     result = compute_range_sum(start, end)
 
@@ -38,26 +44,20 @@ def execute_chunk(payload: dict):
     }
 
 
-from relay_task import send_chunk_to_node
-import asyncio
-from compute import compute_range_sum
-
-
+# -----------------------------
+# Distributed computation
+# -----------------------------
 @app.post("/distributed_sum")
 async def distributed_sum():
 
     total_start = 1
     total_end = 10
 
-    peers = fetch_peers()
+    # get active nodes from relay
+    peers = fetch_nodes()
 
-    peer_ids = []
+    peer_ids = [p for p in peers if p != NODE_ID]
 
-    for p in peers:
-        if isinstance(p, dict):
-            node_id = p.get("node_id")
-            if node_id and node_id != NODE_ID:
-                peer_ids.append(node_id)
     total_nodes = len(peer_ids) + 1
     range_size = total_end - total_start + 1
 
@@ -67,22 +67,27 @@ async def distributed_sum():
     current = total_start
     results = []
 
-    # send chunks to peers
+    # send work to peer nodes
     for i, peer in enumerate(peer_ids):
 
         extra = 1 if i < remainder else 0
         end = current + chunk_size + extra - 1
 
+        logger.info(f"Sending chunk {current}-{end} to {peer}")
+
         result = await send_chunk_to_node(peer, current, end)
+
         results.append(result or 0)
 
         current = end + 1
 
-    # local chunk
+    # local computation
     local_result = compute_range_sum(current, total_end)
     results.append(local_result)
 
     final = sum(results)
+
+    logger.info(f"Final distributed result: {final}")
 
     return {
         "node": NODE_ID,
@@ -90,22 +95,13 @@ async def distributed_sum():
     }
 
 
+# -----------------------------
+# Startup event
+# -----------------------------
 @app.on_event("startup")
 async def startup_event():
-    address = f"http://{HOST}:{PORT}"
 
-    # Register node with bootstrap server
-    register_self(address)
-    logger.info(f"Registered {NODE_ID} at {address}")
+    logger.info(f"Node starting: {NODE_ID}")
 
-    # Start heartbeat loop in background thread
-    def heartbeat_loop():
-        while True:
-            send_heartbeat(address)
-            time.sleep(5)
-
-    thread = threading.Thread(target=heartbeat_loop, daemon=True)
-    thread.start()
-
-    # Connect node to relay server (async)
+    # connect to relay server
     asyncio.create_task(connect_to_relay())
