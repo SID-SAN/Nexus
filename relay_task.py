@@ -1,6 +1,6 @@
 import json
 import asyncio
-from relay_client import websocket_connection, pending_results
+import relay_client
 from config import NODE_ID
 
 
@@ -8,7 +8,7 @@ async def send_chunk_to_node(target_node, start, end):
 
     print(f"[Task] Sending chunk {start}-{end} to {target_node}")
 
-    while websocket_connection is None:
+    while relay_client.websocket_connection is None:
         print("[Task] Waiting for relay connection...")
         await asyncio.sleep(0.2)
 
@@ -22,13 +22,13 @@ async def send_chunk_to_node(target_node, start, end):
         }
     }
 
-    await websocket_connection.send(json.dumps(message))
+    await relay_client.websocket_connection.send(json.dumps(message))
 
     print("[Task] Waiting for result...")
 
-    while target_node not in pending_results:
+    while target_node not in relay_client.pending_results:
         await asyncio.sleep(0.1)
 
-    result = pending_results.pop(target_node)
+    result = relay_client.pending_results.pop(target_node)
 
     return result
