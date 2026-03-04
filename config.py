@@ -1,15 +1,17 @@
 import os
 
+# Unique node id
 NODE_ID = os.getenv("NODE_ID", "node_default")
 
-HOST = "127.0.0.1"
+# Node server settings
+HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", 5001))
 
-BOOTSTRAP_URL = "http://127.0.0.1:8000"
+# Bootstrap server (local or deployed)
+BOOTSTRAP_URL = os.getenv(
+    "BOOTSTRAP_URL",
+    "http://127.0.0.1:8000"
+)
 
+# Request timeout
 REQUEST_TIMEOUT = 5
-
-PEERS = [
-    "http://127.0.0.1:5002",
-    "http://127.0.0.1:5003",
-]
