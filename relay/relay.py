@@ -3,7 +3,10 @@ import json
 
 app = FastAPI()
 
-# active node connections
+@app.get("/")
+def root():
+    return {"message": "Relay server running"}
+
 connected_nodes = {}
 
 @app.websocket("/ws/{node_id}")
@@ -20,11 +23,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             target = message.get("target")
 
-            # route message to target node
             if target in connected_nodes:
                 target_socket = connected_nodes[target]
                 await target_socket.send_text(json.dumps(message))
-
             else:
                 print(f"Target {target} not connected")
 
