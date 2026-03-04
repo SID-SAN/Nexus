@@ -38,66 +38,55 @@ def execute_chunk(payload: dict):
     }
 
 
-from network import send_task
-from config import PEERS
+from relay_task import send_chunk_to_node
+import asyncio
+from compute import compute_range_sum
+
+
 @app.post("/distributed_sum")
-def distributed_sum():
+async def distributed_sum():
 
     total_start = 1
-    total_end = 10  # keep small for testing
+    total_end = 10
 
     peers = fetch_peers()
-    logger.info(f"Discovered peers: {peers}")
-    
-    # Fetch live peers from bootstrap
-    peers = fetch_peers()
 
-    total_nodes = len(peers) + 1
+    peer_ids = []
+
+    for p in peers:
+        if isinstance(p, dict):
+            node_id = p.get("node_id")
+            if node_id and node_id != NODE_ID:
+                peer_ids.append(node_id)
+    total_nodes = len(peer_ids) + 1
     range_size = total_end - total_start + 1
 
     chunk_size = range_size // total_nodes
     remainder = range_size % total_nodes
 
+    current = total_start
     results = []
-    current_start = total_start
 
-    # Assign chunks to peers
-    for i, peer in enumerate(peers):
+    # send chunks to peers
+    for i, peer in enumerate(peer_ids):
+
         extra = 1 if i < remainder else 0
-        current_end = current_start + chunk_size + extra
+        end = current + chunk_size + extra - 1
 
-        chunk = {"start": current_start, "end": current_end}
-        assigned = False
+        result = await send_chunk_to_node(peer, current, end)
+        results.append(result or 0)
 
-        logger.info(f"Trying peer {peer} for chunk {chunk}")
+        current = end + 1
 
-        response = send_task(peer, chunk)
-
-        if "error" not in response:
-            results.append(response.get("result", 0))
-            assigned = True
-        else:
-            logger.warning(f"Peer {peer} failed for chunk {chunk}")
-
-        if not assigned:
-            logger.warning(f"Executing failed chunk locally {chunk}")
-            local_result = compute_range_sum(chunk["start"], chunk["end"])
-            results.append(local_result)
-
-        current_start = current_end
-
-    # Coordinator executes its own chunk (remaining portion)
-    logger.info(f"Executing coordinator chunk {current_start} to {total_end}")
-    local_result = compute_range_sum(current_start, total_end)
+    # local chunk
+    local_result = compute_range_sum(current, total_end)
     results.append(local_result)
 
-    final_result = sum(results)
-
-    logger.info(f"Final aggregated result: {final_result}")
+    final = sum(results)
 
     return {
         "node": NODE_ID,
-        "final_result": final_result
+        "result": final
     }
 
 
