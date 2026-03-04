@@ -1,8 +1,9 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import json
 
 app = FastAPI()
 
-# store active node connections
+# active node connections
 connected_nodes = {}
 
 @app.websocket("/ws/{node_id}")
@@ -15,10 +16,17 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            print(f"Message from {node_id}: {data}")
+            message = json.loads(data)
 
-            # simple echo for now
-            await websocket.send_text(f"Relay received: {data}")
+            target = message.get("target")
+
+            # route message to target node
+            if target in connected_nodes:
+                target_socket = connected_nodes[target]
+                await target_socket.send_text(json.dumps(message))
+
+            else:
+                print(f"Target {target} not connected")
 
     except WebSocketDisconnect:
         print(f"Node disconnected: {node_id}")
