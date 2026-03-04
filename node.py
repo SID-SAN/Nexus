@@ -8,6 +8,10 @@ from logger import setup_logger
 import threading
 import time
 from bootstrap_client import send_heartbeat
+from relay_client import connect_to_relay
+import asyncio
+from network import register_self, send_heartbeat
+
 
 app = FastAPI()
 logger = setup_logger(NODE_ID)
@@ -96,12 +100,16 @@ def distributed_sum():
         "final_result": final_result
     }
 
+
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     address = f"http://{HOST}:{PORT}"
+
+    # Register node with bootstrap server
     register_self(address)
     logger.info(f"Registered {NODE_ID} at {address}")
 
+    # Start heartbeat loop in background thread
     def heartbeat_loop():
         while True:
             send_heartbeat(address)
@@ -109,3 +117,6 @@ def startup_event():
 
     thread = threading.Thread(target=heartbeat_loop, daemon=True)
     thread.start()
+
+    # Connect node to relay server (async)
+    asyncio.create_task(connect_to_relay())

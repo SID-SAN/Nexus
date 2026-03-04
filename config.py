@@ -1,9 +1,9 @@
 import os
 
-BOOTSTRAP_URL = "https://nexus-wr6s.onrender.com"
+BOOTSTRAP_URL = "http://127.0.0.1:8000"
 NODE_ID = os.getenv("NODE_ID", "node_default")
 HOST = "127.0.0.1"
-PORT = os.getenv("PORT")
+PORT = 5001
 
 PEERS = [
     "http://127.0.0.1:5002",
