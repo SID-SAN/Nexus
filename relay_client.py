@@ -5,7 +5,7 @@ import json
 from config import NODE_ID
 from compute import compute_range_sum
 
-RELAY_URL = f"ws://127.0.0.1:9000/ws/{NODE_ID}"
+RELAY_URL = f"wss://nexus-relay-5wog.onrender.com/ws/{NODE_ID}"
 
 websocket_connection = None
 pending_results = {}
