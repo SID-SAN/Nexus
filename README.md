@@ -1,166 +1,238 @@
-# Nexus v1.0.0
-## Internet-Aware Distributed Compute Network (Direct HTTP Model)
+# Nexus
+
+Nexus is a lightweight distributed computing framework that allows multiple machines to collaborate on computational tasks over the internet.
+
+It demonstrates how independent nodes can connect to a central relay server and execute distributed workloads without requiring direct peer-to-peer networking.
+
+The system uses WebSockets for communication and dynamically discovers active nodes through the relay.
 
 ---
 
-## Vision
+# Architecture
 
-Nexus is a distributed computing framework designed to allow multiple student machines to pool their hardware resources and collaboratively execute computational workloads.
-
-The goal is to transform idle personal computers into a shared compute network.
-
-Version **v1.0.0** marks the first stable milestone:  
-Internet-backed peer discovery with distributed execution.
-
----
-
-##  Architecture Overview
-
-Nexus v1.0.0 consists of two main layers:
-
-###  Distributed Compute Layer (Runs on Student Machines)
-
-Each node:
-- Runs a FastAPI server
-- Registers itself with a cloud bootstrap service
-- Fetches active peer list dynamically
-- Splits computational tasks
-- Sends chunks to peers
-- Aggregates results
-- Handles peer failures gracefully
-
-###  Cloud Bootstrap Layer (Discovery Service)
-
-The bootstrap server:
-- Maintains a registry of active nodes
-- Accepts node registrations
-- Removes inactive nodes via heartbeat timeout
-- Returns current peer list on request
-
-Bootstrap does NOT:
-- Execute tasks
-- Store computation results
-- Coordinate execution
-- Act as a relay
-
-It is purely a discovery layer.
-
-
-## Communication Model (v1.0.0)
-Node A → HTTP → Node B
-<br>
-Node B → HTTP → Node C
-
-
-- Direct REST-based peer-to-peer communication
-- Nodes communicate using HTTP POST requests
-- Distributed task chunks are executed across peers
-
-⚠ Limitation:<br>
-Nodes must be network-reachable.  
-Machines behind NAT without port forwarding cannot accept inbound traffic.
-
-This limitation will be addressed in v2.
-
----
-
-## Features
-
-- Multi-node distributed computation
-- Dynamic peer discovery via cloud
-- Heartbeat-based liveness detection
-- Automatic chunk splitting
-- Fault-tolerant execution
-- Peer fallback on failure
-- Local fallback execution
-- Structured logging
-- Scalable node count
-
----
-
-## Running Nexus v1.0.0
-
-###  Ensure Bootstrap Server Is Live
-
-Example:
+Nexus uses a relay-based architecture for routing messages between nodes.
 ```
-https://your-bootstrap-service.onrender.com
+Client / Node
+↓
+Relay Server (Render)
+↓
+Other Nodes
 ```
 
+Each node connects to the relay via WebSocket and can send or receive tasks through the relay.
+
+The relay acts as a **message router and node registry**, allowing nodes to discover each other without direct connections.
 
 ---
 
-###  Start Multiple Nodes
+# Features
 
-Open separate terminals:
-<br>
-uvicorn node:app --port 5001
-<br>
-uvicorn node:app --port 5002
-<br>
-uvicorn node:app --port 5003
+• Distributed task execution  
+• Relay-based networking (no direct node connections required)  
+• Dynamic node discovery  
+• Internet-capable distributed system  
+• Fault-tolerant message routing  
+• Horizontally scalable node architecture  
 
+---
+
+# Project Evolution
+
+Nexus was developed in multiple stages.
+
+### v0 — Local Compute
+
+Basic computation logic implemented locally.
+
+Features:
+- Task execution
+- Range-based computation
+
+---
+
+### v1 — Bootstrap Networking
+
+Introduced peer discovery using a bootstrap server.
+
+Features:
+- Node registration
+- Peer discovery
+- Heartbeat monitoring
+
+---
+
+### v2 — Relay Distributed System
+
+Current architecture using a central relay server.
+
+Features:
+- WebSocket communication
+- Message routing between nodes
+- Node registry via relay
+- Internet-based distributed execution
+
+---
+
+# Repository Structure
+```
+Nexus
+│
+├── relay/
+│ ├── init.py
+│ └── relay.py
+│
+├── node.py
+├── relay_client.py
+├── relay_task.py
+├── relay_registry.py
+│
+├── compute.py
+├── config.py
+├── logger.py
+│
+├── requirements.txt
+├── README.md
+└── future_features.md
+```
+
+
+---
+
+# Core Components
+
+### Relay Server
+
+The relay server manages node connections and routes messages between nodes.
+
+Responsibilities:
+
+- Maintain active node connections
+- Route tasks between nodes
+- Provide node registry API
+
+---
+
+### Node
 
 Each node:
-- Registers to bootstrap
-- Fetches peer list
-- Starts heartbeat loop
+
+- Connects to the relay
+- Receives distributed tasks
+- Executes computation
+- Returns results
 
 ---
 
-###  Verify Active Peers
+### Relay Client
+
+Maintains a persistent WebSocket connection with the relay server.
+
+Handles incoming task messages and result routing.
+
+---
+
+### Relay Task
+
+Responsible for sending computation tasks to remote nodes.
+
+---
+
+### Compute Module
+
+Contains the computation logic.
+
+Currently implemented:
+
+- Range-based sum computation
+
+---
+
+# Running the System
+
+## 1 Start Relay Server
+
+The relay server is deployed on Render.
+
+Example endpoint:
+```
+https://nexus-relay-5wog.onrender.com
+```
+
+---
+
+## 2 Start Nodes
+
+Run nodes with different IDs.
+
+Node 1:
+```
+NODE_ID=node_1 uvicorn node:app --port 5001
+```
+Node 2:
+```
+NODE_ID=node_2 uvicorn node:app --port 5002
+```
+
+---
+
+## 3 Run Distributed Task
 
 Open:
 ```
-http://localhost:5001/docs
+http://127.0.0.1:5001/docs
+```
+Run:
+```
+POST/distributed_sum
 ```
 
-
-Execute:
-
-POST `/distributed_sum`
-
-Expected behavior:
-- Each node processes a different chunk
-- Logs appear in all terminals
-- Results are aggregated
-- Final result returned by coordinator
+The task will be split across available nodes.
 
 ---
 
-## Fault Tolerance
-
-If a peer fails during execution:
-
-- The system detects failure
-- Reassigns chunk to another peer
-- Falls back to local execution if necessary
-- Final result remains correct
-
-Correctness is guaranteed even with partial node failure.
+# Example Output
+```
+{
+"node": "node_1",
+"result": 55
+}
+```
 
 ---
 
-## Version History
+# Future Improvements
 
-| Version | Description |
-|----------|-------------|
-| v0.0.0 | Local multi-process distributed execution |
-| v1.0.0 | Internet-backed peer discovery + direct HTTP distributed execution |
+See `future_features.md` for planned upgrades.
 
----
+Potential future features:
 
-## Current Status
-
-Nexus v1.0.0 is stable and frozen.
-
-Discovery Layer: Cloud bootstrap  
-Transport Layer: Direct HTTP  
-Compute Layer: Distributed chunk execution  
-
-Next Evolution:
-Relay-based transport layer to enable NAT-safe internet-wide student networking.
+- Distributed task scheduler
+- Dynamic load balancing
+- Fault-tolerant node recovery
+- Multi-task distributed workloads
+- GPU-aware scheduling
+- Large-scale cluster support
 
 ---
 
-Nexus is evolving from a distributed experiment into a real peer compute platform.
+# Tech Stack
+
+Python  
+FastAPI  
+WebSockets  
+Uvicorn  
+Render (deployment)
+
+---
+
+# Why Nexus
+
+Nexus demonstrates core distributed systems concepts:
+
+- distributed task execution
+- message routing
+- node discovery
+- fault tolerance
+- scalable architecture
+
+The project serves as a learning platform for building distributed computing systems similar in concept to frameworks like Ray or Dask.
