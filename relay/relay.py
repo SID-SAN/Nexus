@@ -6,6 +6,12 @@ app = FastAPI()
 # active node connections
 connected_nodes = {}
 
+@app.get("/health")
+def health():
+    return {
+        "status": "relay_alive",
+        "connected_nodes": list(connected_nodes.keys())
+    }
 
 @app.get("/")
 def root():
