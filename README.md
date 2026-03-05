@@ -197,7 +197,21 @@ The task will be split across available nodes.
 "result": 55
 }
 ```
+---
+## Running Nexus Node
 
+Download nexus-node.exe and run:
+
+nexus-node.exe start --node-id <unique_node_id>
+
+Example:
+```
+nexus-node.exe start --node-id jack-laptop
+nexus-node.exe start --node-id lab-pc-14
+```
+Each node must have a unique node-id.
+
+The node will automatically connect to the Nexus relay server and join the compute network.
 ---
 
 # Future Improvements
