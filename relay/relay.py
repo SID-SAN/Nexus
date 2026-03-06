@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import json
 
 app = FastAPI()
+node_resources = {}
 
 # active node connections
 connected_nodes = {}
@@ -37,6 +38,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             data = await websocket.receive_text()
             message = json.loads(data)
+            if message.get("type") == "resource_update":
+                node_resources[node_id] = message["payload"]
+                return
 
             target = message.get("target")
 
@@ -50,3 +54,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
         print(f"Node disconnected: {node_id}")
         connected_nodes.pop(node_id, None)
+
+@app.get("/resources")
+def get_resources():
+    return node_resources

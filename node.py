@@ -8,6 +8,7 @@ from compute import compute_range_sum
 from relay_client import connect_to_relay
 from relay_task import send_chunk_to_node
 from relay_registry import fetch_nodes
+from resource_monitor import start_resource_monitor
 
 
 app = FastAPI()
@@ -113,3 +114,4 @@ async def startup_event():
 
     # connect to relay server
     asyncio.create_task(connect_to_relay())
+    asyncio.create_task(start_resource_monitor())
