@@ -72,3 +72,11 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
         connected_nodes.pop(node_id, None)
         node_resources.pop(node_id, None)
+
+@app.get("/cluster_status")
+def cluster_status():
+
+    return {
+        "connected_nodes": list(connected_nodes.keys()),
+        "resources": node_resources
+    }

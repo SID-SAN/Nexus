@@ -1,37 +1,35 @@
 import requests
-from config import RELAY_URL
+
+RELAY_URL = "https://nexus-relay-5wog.onrender.com"
 
 
-def get_cluster_resources():
+def select_best_nodes(peer_ids, max_nodes=3):
 
     try:
-        response = requests.get(f"{RELAY_URL}/resources")
-        return response.json()
+        res = requests.get(f"{RELAY_URL}/resources", timeout=3)
+        resources = res.json()
 
     except Exception as e:
-        print("Failed to fetch resources:", e)
-        return {}
+        print("Scheduler failed to fetch resources:", e)
+        return peer_ids
 
+    node_scores = []
 
-def select_best_nodes(peers):
+    for node in peer_ids:
 
-    resources = get_cluster_resources()
+        if node not in resources:
+            node_scores.append((node, 1000))
+            continue
 
-    scored_nodes = []
+        cpu = resources[node].get("cpu", 100)
+        ram = resources[node].get("ram", 100)
 
-    for node in peers:
+        score = cpu * 0.7 + ram * 0.3
 
-        if node in resources:
+        node_scores.append((node, score))
 
-            cpu = resources[node].get("cpu", 100)
-            memory = resources[node].get("ram", 100)
+    node_scores.sort(key=lambda x: x[1])
 
-            score = cpu + memory
-            scored_nodes.append((node, score))
+    best_nodes = [node for node, _ in node_scores[:max_nodes]]
 
-        else:
-            scored_nodes.append((node, 200))
-
-    scored_nodes.sort(key=lambda x: x[1])
-
-    return [node for node, score in scored_nodes]
+    return best_nodes

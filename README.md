@@ -1,252 +1,337 @@
 # Nexus
 
+### Distributed Computing Framework
+
 Nexus is a lightweight distributed computing framework that allows multiple machines to collaborate on computational tasks over the internet.
 
-It demonstrates how independent nodes can connect to a central relay server and execute distributed workloads without requiring direct peer-to-peer networking.
+Nodes connect to a central relay server and distribute workloads across available machines based on real-time resource availability.
 
-The system uses WebSockets for communication and dynamically discovers active nodes through the relay.
+---
+
+# Version
+
+Current Release: **v3.0.0**
+
+---
+
+# Overview
+
+Nexus enables a group of computers to act as a small compute cluster.
+
+Instead of running heavy computations on one machine, Nexus splits the workload into smaller chunks and distributes them across connected nodes.
+
+Each node executes its assigned task and sends the result back to the requesting node.
 
 ---
 
 # Architecture
 
-Nexus uses a relay-based architecture for routing messages between nodes.
 ```
-Client / Node
-↓
-Relay Server (Render)
-↓
-Other Nodes
+        ┌───────────────┐
+        │   Relay Node  │
+        │  (WebSocket)  │
+        └───────┬───────┘
+                │
+        ┌───────┴────────┐
+        │                │
+   ┌─────────┐      ┌─────────┐
+   │ Node 1  │      │ Node 2  │
+   │Compute  │      │Compute  │
+   └─────────┘      └─────────┘
 ```
 
-Each node connects to the relay via WebSocket and can send or receive tasks through the relay.
+Components:
 
-The relay acts as a **message router and node registry**, allowing nodes to discover each other without direct connections.
+**Relay Server**
 
----
+* WebSocket message router
+* Node registry
+* Cluster resource monitor
 
-# Features
+**Nodes**
 
-• Distributed task execution  
-• Relay-based networking (no direct node connections required)  
-• Dynamic node discovery  
-• Internet-capable distributed system  
-• Fault-tolerant message routing  
-• Horizontally scalable node architecture  
-
----
-
-# Project Evolution
-
-Nexus was developed in multiple stages.
-
-### v0 — Local Compute
-
-Basic computation logic implemented locally.
-
-Features:
-- Task execution
-- Range-based computation
+* Compute execution engine
+* Task registry
+* Distributed scheduler
+* Resource monitor
 
 ---
 
-### v1 — Bootstrap Networking
+# Key Features
 
-Introduced peer discovery using a bootstrap server.
+### Distributed Task Execution
 
-Features:
-- Node registration
-- Peer discovery
-- Heartbeat monitoring
+Tasks are divided into chunks and executed across multiple nodes.
+
+### Parallel Processing
+
+Nodes execute workloads simultaneously for faster computation.
+
+### Resource Monitoring
+
+Each node periodically reports CPU and RAM usage to the relay server.
+
+### Resource-Aware Scheduling
+
+Tasks are assigned to nodes with the lowest CPU and RAM utilization.
+
+### Task Registry
+
+Nexus supports multiple compute tasks through a modular registry system.
 
 ---
 
-### v2 — Relay Distributed System
+# Supported Distributed Tasks
 
-Current architecture using a central relay server.
+| Task            | Description                     |
+| --------------- | ------------------------------- |
+| `sum`           | Sum of numbers in a range       |
+| `prime_count`   | Counts prime numbers in a range |
+| `vector_sum`    | Sum of squared numbers          |
+| `factorial_sum` | Sum of factorial values         |
+| `fibonacci_sum` | Sum of fibonacci numbers        |
 
-Features:
-- WebSocket communication
-- Message routing between nodes
-- Node registry via relay
-- Internet-based distributed execution
+New tasks can be easily added through the **task registry**.
 
 ---
 
-# Repository Structure
+# Project Structure
+
 ```
-Nexus
+Nexus/
 │
 ├── relay/
-│ ├── init.py
-│ └── relay.py
+│   ├── relay.py
+│   └── __init__.py
 │
 ├── node.py
 ├── relay_client.py
 ├── relay_task.py
 ├── relay_registry.py
-│
+├── scheduler.py
+├── resource_monitor.py
+├── tasks_registry.py
 ├── compute.py
 ├── config.py
 ├── logger.py
-│
 ├── requirements.txt
-├── README.md
-└── future_features.md
-```
-
-
----
-
-# Core Components
-
-### Relay Server
-
-The relay server manages node connections and routes messages between nodes.
-
-Responsibilities:
-
-- Maintain active node connections
-- Route tasks between nodes
-- Provide node registry API
-
----
-
-### Node
-
-Each node:
-
-- Connects to the relay
-- Receives distributed tasks
-- Executes computation
-- Returns results
-
----
-
-### Relay Client
-
-Maintains a persistent WebSocket connection with the relay server.
-
-Handles incoming task messages and result routing.
-
----
-
-### Relay Task
-
-Responsible for sending computation tasks to remote nodes.
-
----
-
-### Compute Module
-
-Contains the computation logic.
-
-Currently implemented:
-
-- Range-based sum computation
-
----
-
-# Running the System
-
-## 1 Start Relay Server
-
-The relay server is deployed on Render.
-
-Example endpoint:
-```
-https://nexus-relay-5wog.onrender.com
+└── README.md
 ```
 
 ---
 
-## 2 Start Nodes
+# Running the Relay Server
 
-Run nodes with different IDs.
+Start the relay server:
 
-Node 1:
 ```
-NODE_ID=node_1 uvicorn node:app --port 5001
-```
-Node 2:
-```
-NODE_ID=node_2 uvicorn node:app --port 5002
+uvicorn relay.relay:app --host 0.0.0.0 --port 9000
 ```
 
----
+Relay responsibilities:
 
-## 3 Run Distributed Task
-
-Open:
-```
-http://127.0.0.1:5001/docs
-```
-Run:
-```
-POST/distributed_sum
-```
-
-The task will be split across available nodes.
+* Node communication
+* Task routing
+* Resource tracking
+* Cluster status
 
 ---
 
-# Example Output
-```
-{
-"node": "node_1",
-"result": 55
-}
-```
----
-## Running Nexus Node
+# Running Nexus Nodes
 
-Download nexus-node.exe and run:
-
-nexus-node.exe start --node-id <unique_node_id>
+Each computer runs a Nexus node.
 
 Example:
+
 ```
-nexus_node.exe start --node-id jack-laptop
-nexus_node.exe start --node-id lab-pc-14
+NODE_ID=node_1 python -m uvicorn node:app --port 5001
 ```
-Each node must have a unique node-id.
 
-The node will automatically connect to the Nexus relay server and join the compute network.
----
+Second machine:
 
-# Future Improvements
+```
+NODE_ID=node_2 python -m uvicorn node:app --port 5002
+```
 
-See `future_features.md` for planned upgrades.
+Nodes automatically:
 
-Potential future features:
-
-- Distributed task scheduler
-- Dynamic load balancing
-- Fault-tolerant node recovery
-- Multi-task distributed workloads
-- GPU-aware scheduling
-- Large-scale cluster support
+* connect to relay
+* report resources
+* receive compute tasks
 
 ---
 
-# Tech Stack
+# Executing a Distributed Task
 
-Python  
-FastAPI  
-WebSockets  
-Uvicorn  
-Render (deployment)
+Open the API documentation:
+
+```
+http://localhost:5001/docs
+```
+
+Use the endpoint:
+
+```
+POST /distributed_task
+```
+
+Example request:
+
+```json
+{
+  "task": "prime_count",
+  "start": 1,
+  "end": 100000
+}
+```
+
+The workload will automatically be distributed across connected nodes.
+
+---
+## Running Nexus Node (Executable)
+
+Nexus nodes can be started using the standalone executable without installing Python or cloning the repository.
+
+### Step 1 — Download
+
+Download the `nexus-node.exe` file from the repository.
+
+### Step 2 — Start a Node
+
+Run the following command:
+
+```bash
+.\nexus-node.exe start --node-id node_1 --port 5001
+```
+
+Example:
+
+```bash
+.\nexus-node.exe start --node-id node_1 --port 5001
+```
+
+### Parameters
+
+| Parameter | Description |
+|----------|-------------|
+| `--node-id` | Unique identifier for the node |
+| `--port` | Port on which the node will run |
+
+Example for a second node:
+
+```bash
+.\nexus-node.exe start --node-id node_2 --port 5002
+```
+
+### Access Node API
+
+After starting the node, open:
+
+```
+http://localhost:PORT/docs
+```
+
+Example:
+
+```
+http://localhost:5001/docs
+```
+
+This opens the interactive API where you can trigger distributed tasks.
+
+### Example Distributed Task
+
+From Node 1:
+
+```
+POST /distributed_task
+```
+
+Payload example:
+
+```json
+{
+  "task": "sum",
+  "start": 1,
+  "end": 100000000
+}
+```
+
+The workload will automatically be distributed across available Nexus nodes.
 
 ---
 
-# Why Nexus
+### Example Network Setup
 
-Nexus demonstrates core distributed systems concepts:
+Machine 1:
 
-- distributed task execution
-- message routing
-- node discovery
-- fault tolerance
-- scalable architecture
+```
+.\nexus-node.exe start --node-id node_1 --port 5001
+```
 
-The project serves as a learning platform for building distributed computing systems similar in concept to frameworks like Ray or Dask.
+Machine 2:
+
+```
+.\nexus-node.exe start --node-id node_2 --port 5002
+```
+
+Both nodes automatically connect to the Nexus relay server and become part of the compute network.
+---
+# Cluster Monitoring
+
+Relay endpoints:
+
+```
+/nodes
+/resources
+/cluster_status
+```
+
+Example:
+
+```
+https://nexus-relay-5wog.onrender.com/cluster_status
+```
+
+Returns connected nodes and their resource usage.
+
+---
+
+# Example Workflow
+
+1. Start relay server
+2. Start multiple Nexus nodes
+3. Submit distributed task
+4. Scheduler selects best nodes
+5. Nodes execute chunks
+6. Results are aggregated
+
+---
+
+# Roadmap
+
+### v1
+
+Local distributed computation
+
+### v2
+
+Internet-connected nodes using relay transport
+
+### v3
+
+Resource-aware distributed compute framework
+
+### v4 (Planned)
+
+Secure sandboxed execution of arbitrary workloads
+
+---
+
+# Use Cases
+
+* Distributed mathematical computation
+* Parallel simulations
+* CPU-intensive research workloads
+* Experimental distributed computing systems
+* Educational distributed systems platform
