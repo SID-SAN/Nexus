@@ -206,8 +206,8 @@ nexus-node.exe start --node-id <unique_node_id>
 
 Example:
 ```
-nexus-node.exe start --node-id jack-laptop
-nexus-node.exe start --node-id lab-pc-14
+nexus_node.exe start --node-id jack-laptop
+nexus_node.exe start --node-id lab-pc-14
 ```
 Each node must have a unique node-id.
 

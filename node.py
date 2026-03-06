@@ -26,23 +26,31 @@ def health():
 # -----------------------------
 # Execute compute chunk
 # -----------------------------
+from tasks_registry import get_task
+
+
 @app.post("/execute_chunk")
 def execute_chunk(payload: dict):
 
+    task_name = payload.get("task")
     start = payload.get("start")
     end = payload.get("end")
 
-    logger.info(f"Executing chunk {start}-{end}")
+    logger.info(f"Received task {task_name} : {start} → {end}")
 
-    result = compute_range_sum(start, end)
+    task_function = get_task(task_name)
 
-    logger.info(f"Chunk result: {result}")
+    if not task_function:
+        return {"error": "unknown task"}
+
+    result = task_function(start, end)
+
+    logger.info(f"Task result: {result}")
 
     return {
         "node": NODE_ID,
         "result": result
     }
-
 
 # -----------------------------
 # Distributed computation
@@ -75,7 +83,7 @@ async def distributed_sum():
 
         logger.info(f"Sending chunk {current}-{end} to {peer}")
 
-        result = await send_chunk_to_node(peer, current, end)
+        result = await send_chunk_to_node(peer, "sum", current, end)
 
         results.append(result or 0)
 
