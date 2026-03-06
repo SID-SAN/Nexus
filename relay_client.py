@@ -16,8 +16,11 @@ async def connect_to_relay():
 
     while True:
         try:
-            async with websockets.connect(RELAY_URL) as websocket:
-
+            async with websockets.connect(
+                RELAY_URL,
+                ping_interval=20,
+                ping_timeout=20
+            ) as websocket:
                 websocket_connection = websocket
                 print(f"[Relay] Connected as {NODE_ID}")
 
@@ -30,7 +33,7 @@ async def connect_to_relay():
                     msg_type = data.get("type")
 
                     # --------------------------------
-                    # Execute compute chunk
+                    # OLD PROTOCOL (V2) execute_chunk
                     # --------------------------------
                     if msg_type == "execute_chunk":
 
@@ -56,7 +59,38 @@ async def connect_to_relay():
                         print(f"[Relay] Sent result {result} back to {data['source']}")
 
                     # --------------------------------
-                    # Receive compute result
+                    # NEW PROTOCOL (V3) execute_task
+                    # --------------------------------
+                    elif msg_type == "execute_task":
+
+                        payload = data["payload"]
+                        task = payload["task"]
+                        start = payload["start"]
+                        end = payload["end"]
+
+                        print(f"[Relay] Executing task '{task}' {start}-{end}")
+
+                        if task == "sum":
+                            result = compute_range_sum(start, end)
+                        else:
+                            print(f"[Relay] Unknown task: {task}")
+                            result = None
+
+                        response = {
+                            "target": data["source"],
+                            "source": NODE_ID,
+                            "type": "task_result",
+                            "payload": {
+                                "result": result
+                            }
+                        }
+
+                        await websocket.send(json.dumps(response))
+
+                        print(f"[Relay] Sent task result {result} back to {data['source']}")
+
+                    # --------------------------------
+                    # Receive OLD results
                     # --------------------------------
                     elif msg_type == "chunk_result":
 
@@ -64,6 +98,18 @@ async def connect_to_relay():
                         result = data["payload"]["result"]
 
                         print(f"[Relay] Received result from {source}: {result}")
+
+                        pending_results[source] = result
+
+                    # --------------------------------
+                    # Receive NEW results
+                    # --------------------------------
+                    elif msg_type == "task_result":
+
+                        source = data["source"]
+                        result = data["payload"]["result"]
+
+                        print(f"[Relay] Received task result from {source}: {result}")
 
                         pending_results[source] = result
 

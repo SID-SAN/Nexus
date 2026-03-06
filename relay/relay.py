@@ -2,10 +2,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import json
 
 app = FastAPI()
+
+connected_nodes = {}
 node_resources = {}
 
-# active node connections
-connected_nodes = {}
+
+@app.get("/")
+def root():
+    return {"message": "Relay server running"}
+
 
 @app.get("/health")
 def health():
@@ -14,15 +19,15 @@ def health():
         "connected_nodes": list(connected_nodes.keys())
     }
 
-@app.get("/")
-def root():
-    return {"message": "Relay server running"}
 
-
-# NEW: node registry endpoint
 @app.get("/nodes")
 def get_nodes():
     return {"nodes": list(connected_nodes.keys())}
+
+
+@app.get("/resources")
+def get_resources():
+    return node_resources
 
 
 @app.websocket("/ws/{node_id}")
@@ -38,23 +43,32 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             data = await websocket.receive_text()
             message = json.loads(data)
-            if message.get("type") == "resource_update":
-                node_resources[node_id] = message["payload"]
-                return
 
+            msg_type = message.get("type")
+
+            # handle resource updates
+            if msg_type == "resource_update":
+                node_resources[node_id] = message["payload"]
+                continue
+
+            # route task messages
             target = message.get("target")
 
             if target in connected_nodes:
+
                 target_socket = connected_nodes[target]
+
                 await target_socket.send_text(json.dumps(message))
+
+                print(f"Routed message {msg_type} from {node_id} → {target}")
+
             else:
+
                 print(f"Target {target} not connected")
 
     except WebSocketDisconnect:
 
         print(f"Node disconnected: {node_id}")
-        connected_nodes.pop(node_id, None)
 
-@app.get("/resources")
-def get_resources():
-    return node_resources
+        connected_nodes.pop(node_id, None)
+        node_resources.pop(node_id, None)

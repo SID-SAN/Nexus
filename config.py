@@ -13,5 +13,9 @@ BOOTSTRAP_URL = os.getenv(
     "http://127.0.0.1:8000"
 )
 
+RELAY_URL = "https://nexus-relay-5wog.onrender.com"
+
+
 # Request timeout
 REQUEST_TIMEOUT = 5
+

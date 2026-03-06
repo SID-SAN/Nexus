@@ -6,10 +6,10 @@ from logger import setup_logger
 from compute import compute_range_sum
 
 from relay_client import connect_to_relay
-from relay_task import send_chunk_to_node
+from relay_task import send_task_to_node
 from relay_registry import fetch_nodes
-from resource_monitor import start_resource_monitor
-
+from resource_monitor import resource_monitor_loop
+from scheduler import select_best_nodes
 
 app = FastAPI()
 logger = setup_logger(NODE_ID)
@@ -62,10 +62,18 @@ async def distributed_sum():
     total_start = 1
     total_end = 10
 
-    # get active nodes from relay
     peers = fetch_nodes()
 
+    if isinstance(peers, dict):
+        peers = peers.get("nodes", [])
+
+    logger.info(f"Cluster nodes: {peers}")
+
     peer_ids = [p for p in peers if p != NODE_ID]
+    peer_ids = select_best_nodes(peer_ids)
+
+    if not peer_ids:
+        logger.info("No peers available. Running locally.")
 
     total_nodes = len(peer_ids) + 1
     range_size = total_end - total_start + 1
@@ -76,7 +84,6 @@ async def distributed_sum():
     current = total_start
     results = []
 
-    # send work to peer nodes
     for i, peer in enumerate(peer_ids):
 
         extra = 1 if i < remainder else 0
@@ -84,13 +91,16 @@ async def distributed_sum():
 
         logger.info(f"Sending chunk {current}-{end} to {peer}")
 
-        result = await send_chunk_to_node(peer, "sum", current, end)
+        result = await send_task_to_node(peer, "sum", current, end)
 
-        results.append(result or 0)
+        if result is None:
+            logger.warning(f"Peer {peer} failed. Running fallback locally.")
+            result = compute_range_sum(current, end)
+
+        results.append(result)
 
         current = end + 1
 
-    # local computation
     local_result = compute_range_sum(current, total_end)
     results.append(local_result)
 
@@ -102,8 +112,6 @@ async def distributed_sum():
         "node": NODE_ID,
         "result": final
     }
-
-
 # -----------------------------
 # Startup event
 # -----------------------------
@@ -114,4 +122,4 @@ async def startup_event():
 
     # connect to relay server
     asyncio.create_task(connect_to_relay())
-    asyncio.create_task(start_resource_monitor())
+    asyncio.create_task(resource_monitor_loop())
