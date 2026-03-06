@@ -70,8 +70,12 @@ async def connect_to_relay():
 
                         print(f"[Relay] Executing task '{task}' {start}-{end}")
 
-                        if task == "sum":
-                            result = compute_range_sum(start, end)
+                        from tasks_registry import get_task
+
+                        task_function = get_task(task)
+
+                        if task_function:
+                            result = task_function(start, end)
                         else:
                             print(f"[Relay] Unknown task: {task}")
                             result = None

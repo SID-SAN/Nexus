@@ -56,24 +56,24 @@ def execute_chunk(payload: dict):
 # -----------------------------
 # Distributed computation
 # -----------------------------
-@app.post("/distributed_sum")
-async def distributed_sum():
+from pydantic import BaseModel
 
-    total_start = 1
-    total_end = 10
+class TaskRequest(BaseModel):
+    task: str
+    start: int
+    end: int
+
+
+@app.post("/distributed_task")
+async def distributed_task(req: TaskRequest):
+
+    task_name = req.task
+    total_start = req.start
+    total_end = req.end
 
     peers = fetch_nodes()
-
-    if isinstance(peers, dict):
-        peers = peers.get("nodes", [])
-
-    logger.info(f"Cluster nodes: {peers}")
-
     peer_ids = [p for p in peers if p != NODE_ID]
     peer_ids = select_best_nodes(peer_ids)
-
-    if not peer_ids:
-        logger.info("No peers available. Running locally.")
 
     total_nodes = len(peer_ids) + 1
     range_size = total_end - total_start + 1
@@ -84,24 +84,29 @@ async def distributed_sum():
     current = total_start
     results = []
 
+    tasks = []
+
     for i, peer in enumerate(peer_ids):
 
         extra = 1 if i < remainder else 0
         end = current + chunk_size + extra - 1
 
-        logger.info(f"Sending chunk {current}-{end} to {peer}")
+        logger.info(f"Sending task '{task_name}' chunk {current}-{end} to {peer}")
 
-        result = await send_task_to_node(peer, "sum", current, end)
-
-        if result is None:
-            logger.warning(f"Peer {peer} failed. Running fallback locally.")
-            result = compute_range_sum(current, end)
-
-        results.append(result)
+        tasks.append(send_task_to_node(peer, task_name, current, end))
 
         current = end + 1
 
-    local_result = compute_range_sum(current, total_end)
+    peer_results = await asyncio.gather(*tasks)
+
+    results.extend([r or 0 for r in peer_results])
+
+    # local compute
+    from tasks_registry import get_task
+    task_func = get_task(task_name)
+
+    local_result = task_func(current, total_end)
+
     results.append(local_result)
 
     final = sum(results)
@@ -109,7 +114,7 @@ async def distributed_sum():
     logger.info(f"Final distributed result: {final}")
 
     return {
-        "node": NODE_ID,
+        "task": task_name,
         "result": final
     }
 # -----------------------------
