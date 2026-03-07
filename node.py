@@ -10,6 +10,9 @@ from relay_task import send_task_to_node
 from relay_registry import fetch_nodes
 from resource_monitor import resource_monitor_loop
 from scheduler import select_best_nodes
+import uuid
+
+jobs = {}
 
 app = FastAPI()
 logger = setup_logger(NODE_ID)
@@ -128,3 +131,139 @@ async def startup_event():
     # connect to relay server
     asyncio.create_task(connect_to_relay())
     asyncio.create_task(resource_monitor_loop())
+
+import time
+from pydantic import BaseModel
+@app.post("/benchmark")
+async def benchmark():
+    class BenchmarkRequest(BaseModel):
+        task: str
+        start: int
+        end: int
+
+    req = BenchmarkRequest(
+        task="sum",
+        start=1,
+        end=5000000000
+    )
+
+    start_time = time.time()
+
+    result = await distributed_task(req)
+
+    end_time = time.time()
+
+    return {
+        "node": NODE_ID,
+        "task": "sum",
+        "result": result["result"],
+        "execution_time_seconds": end_time - start_time
+    }
+
+
+from tasks_registry import TASK_REGISTRY
+
+@app.get("/tasks")
+def available_tasks():
+
+    return {
+        "available_tasks": list(TASK_REGISTRY.keys())
+    }
+
+
+@app.post("/submit_job")
+async def submit_job(req: TaskRequest):
+
+    job_id = str(uuid.uuid4())
+
+    jobs[job_id] = {
+        "status": "running",
+        "result": None
+    }
+
+    async def run_job():
+
+        result = await distributed_task(req)
+
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["result"] = result
+
+    asyncio.create_task(run_job())
+
+    return {
+        "job_id": job_id,
+        "status": "submitted"
+    }
+
+
+@app.get("/job_status/{job_id}")
+def job_status(job_id: str):
+
+    if job_id not in jobs:
+        return {"error": "job not found"}
+
+    return {
+        "job_id": job_id,
+        "status": jobs[job_id]["status"]
+    }
+
+
+@app.get("/job_result/{job_id}")
+def job_result(job_id: str):
+
+    if job_id not in jobs:
+        return {"error": "job not found"}
+
+    if jobs[job_id]["status"] != "completed":
+        return {"status": "still running"}
+
+    return {
+        "job_id": job_id,
+        "result": jobs[job_id]["result"]
+    }
+
+
+import requests
+from tasks_registry import TASK_REGISTRY
+
+@app.get("/cluster_dashboard")
+def cluster_dashboard():
+
+    # get nodes from relay
+    nodes = fetch_nodes()
+
+    if isinstance(nodes, dict):
+        nodes = nodes.get("nodes", [])
+
+    # get resources from relay
+    try:
+        resources = requests.get(
+            "https://nexus-relay-5wog.onrender.com/resources",
+            timeout=3
+        ).json()
+    except:
+        resources = {}
+
+    # job summary
+    active_jobs = []
+
+    for jid in jobs:
+        active_jobs.append({
+            "job_id": jid,
+            "status": jobs[jid]["status"]
+        })
+
+    return {
+        "cluster_nodes": nodes,
+        "node_resources": resources,
+        "available_tasks": list(TASK_REGISTRY.keys()),
+        "active_jobs": active_jobs
+    }
+
+
+@app.get("/cluster_nodes")
+def cluster_nodes():
+    nodes = fetch_nodes()
+    if isinstance(nodes, dict):
+        nodes = nodes.get("nodes", [])
+    return {"nodes": nodes}
