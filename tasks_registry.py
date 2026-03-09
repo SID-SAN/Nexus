@@ -3,6 +3,7 @@ from compute import count_primes
 from compute import vector_sum
 from compute import factorial_sum
 from compute import fibonacci_sum
+from compute import power_sum
 
 TASK_REGISTRY = {
 
@@ -14,7 +15,10 @@ TASK_REGISTRY = {
 
     "factorial_sum": factorial_sum,
 
-    "fibonacci_sum": fibonacci_sum
+    "fibonacci_sum": fibonacci_sum,
+
+    "power_sum": power_sum
+
 }
 
 

@@ -65,3 +65,13 @@ def fibonacci_sum(start: int, end: int) -> int:
         total += fibonacci(i)
 
     return total
+
+
+def power_sum(start: int, end: int) -> int:
+
+    total = 0
+
+    for i in range(start, end + 1):
+        total += pow(i, 5)
+
+    return total
