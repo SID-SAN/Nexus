@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 import asyncio
-
+import platform
+import requests
+from tasks_registry import TASK_REGISTRY
 from config import NODE_ID
+from config import PORT
 from logger import setup_logger
-from compute import compute_range_sum
 
 from relay_client import connect_to_relay
 from relay_task import send_task_to_node
@@ -25,6 +27,58 @@ logger = setup_logger(NODE_ID)
 def health():
     logger.info("Health check received")
     return {"status": "ok", "node": NODE_ID}
+
+
+@app.get("/cluster_nodes")
+def cluster_nodes():
+    nodes = fetch_nodes()
+    if isinstance(nodes, dict):
+        nodes = nodes.get("nodes", [])
+    return {"nodes": nodes}
+
+
+@app.get("/cluster_dashboard")
+def cluster_dashboard():
+
+    # get nodes from relay
+    nodes = fetch_nodes()
+
+    if isinstance(nodes, dict):
+        nodes = nodes.get("nodes", [])
+
+    # get resources from relay
+    try:
+        resources = requests.get(
+            "https://nexus-relay-5wog.onrender.com/resources",
+            timeout=3
+        ).json()
+    except:
+        resources = {}
+
+    # job summary
+    active_jobs = []
+
+    for jid in jobs:
+        active_jobs.append({
+            "job_id": jid,
+            "status": jobs[jid]["status"]
+        })
+
+    return {
+        "cluster_nodes": nodes,
+        "node_resources": resources,
+        "available_tasks": list(TASK_REGISTRY.keys()),
+        "active_jobs": active_jobs
+    }
+
+
+@app.get("/tasks")
+def available_tasks():
+
+    return {
+        "available_tasks": list(TASK_REGISTRY.keys())
+    }
+
 
 
 # -----------------------------
@@ -120,56 +174,9 @@ async def distributed_task(req: TaskRequest):
         "task": task_name,
         "result": final
     }
-# -----------------------------
-# Startup event
-# -----------------------------
-@app.on_event("startup")
-async def startup_event():
-
-    logger.info(f"Node starting: {NODE_ID}")
-
-    # connect to relay server
-    asyncio.create_task(connect_to_relay())
-    asyncio.create_task(resource_monitor_loop())
-
-import time
-from pydantic import BaseModel
-@app.post("/benchmark")
-async def benchmark():
-    class BenchmarkRequest(BaseModel):
-        task: str
-        start: int
-        end: int
-
-    req = BenchmarkRequest(
-        task="sum",
-        start=1,
-        end=5000000000
-    )
-
-    start_time = time.time()
-
-    result = await distributed_task(req)
-
-    end_time = time.time()
-
-    return {
-        "node": NODE_ID,
-        "task": "sum",
-        "result": result["result"],
-        "execution_time_seconds": end_time - start_time
-    }
 
 
 from tasks_registry import TASK_REGISTRY
-
-@app.get("/tasks")
-def available_tasks():
-
-    return {
-        "available_tasks": list(TASK_REGISTRY.keys())
-    }
-
 
 @app.post("/submit_job")
 async def submit_job(req: TaskRequest):
@@ -223,47 +230,59 @@ def job_result(job_id: str):
     }
 
 
-import requests
-from tasks_registry import TASK_REGISTRY
 
-@app.get("/cluster_dashboard")
-def cluster_dashboard():
+# -----------------------------
+# Startup event
+# -----------------------------
+@app.on_event("startup")
+async def startup_event():
+    show_startup_banner()
 
-    # get nodes from relay
-    nodes = fetch_nodes()
+    logger.info(f"Node starting: {NODE_ID}")
 
-    if isinstance(nodes, dict):
-        nodes = nodes.get("nodes", [])
+    # connect to relay server
+    asyncio.create_task(connect_to_relay())
+    asyncio.create_task(resource_monitor_loop())
 
-    # get resources from relay
-    try:
-        resources = requests.get(
-            "https://nexus-relay-5wog.onrender.com/resources",
-            timeout=3
-        ).json()
-    except:
-        resources = {}
+import time
+from pydantic import BaseModel
+@app.post("/benchmark")
+async def benchmark():
+    class BenchmarkRequest(BaseModel):
+        task: str
+        start: int
+        end: int
 
-    # job summary
-    active_jobs = []
+    req = BenchmarkRequest(
+        task="sum",
+        start=1,
+        end=5000000000
+    )
 
-    for jid in jobs:
-        active_jobs.append({
-            "job_id": jid,
-            "status": jobs[jid]["status"]
-        })
+    start_time = time.time()
+
+    result = await distributed_task(req)
+
+    end_time = time.time()
 
     return {
-        "cluster_nodes": nodes,
-        "node_resources": resources,
-        "available_tasks": list(TASK_REGISTRY.keys()),
-        "active_jobs": active_jobs
+        "node": NODE_ID,
+        "task": "sum",
+        "result": result["result"],
+        "execution_time_seconds": end_time - start_time
     }
 
 
-@app.get("/cluster_nodes")
-def cluster_nodes():
-    nodes = fetch_nodes()
-    if isinstance(nodes, dict):
-        nodes = nodes.get("nodes", [])
-    return {"nodes": nodes}
+
+def show_startup_banner():
+    print("\n")
+    print("=====================================")
+    print("           NEXUS NODE STARTING       ")
+    print("=====================================")
+    print(f"Node ID      : {NODE_ID}")
+    print(f"Port         : {PORT}")
+    print(f"Platform     : {platform.system()} {platform.release()}")
+    print("Scheduler    : Enabled")
+    print("Resource Mon : Enabled")
+    print("=====================================")
+    print("\n")
