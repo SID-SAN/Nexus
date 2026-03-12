@@ -15,6 +15,7 @@ from scheduler import select_best_nodes
 import uuid
 
 jobs = {}
+chunk_tasks = {}
 chunk_assignments = []
 
 app = FastAPI()
@@ -279,43 +280,79 @@ async def execute_with_retry(node, task, start, end, available_nodes):
     attempts = 0
     max_attempts = 3
 
+    # create chunk id for tracking
+    chunk_id = str(uuid.uuid4())
+
+    chunk_tasks[chunk_id] = {
+        "node": node,
+        "start": start,
+        "end": end,
+        "status": "running",
+        "result": None
+    }
+
     while attempts < max_attempts:
 
         try:
+            logger.info(f"[Chunk {chunk_id}] Sending {start}-{end} → {node}")
+
             result = await send_task_to_node(node, task, start, end)
 
             if result is not None:
+
+                chunk_tasks[chunk_id]["status"] = "completed"
+                chunk_tasks[chunk_id]["result"] = result
+
+                logger.info(f"[Chunk {chunk_id}] Completed on {node}")
+
                 return result
 
         except Exception as e:
-            print(f"[Retry] Node {node} failed: {e}")
+
+            logger.warning(f"[Chunk {chunk_id}] Node {node} failed: {e}")
 
         attempts += 1
 
-        # choose new node
+        # mark retry
+        chunk_tasks[chunk_id]["status"] = "retrying"
+
         # remove failed node
         available_nodes = [n for n in available_nodes if n != node]
 
         # refresh cluster state
         alive_nodes = fetch_nodes()
 
+        # keep only alive nodes
         available_nodes = [n for n in available_nodes if n in alive_nodes]
 
         if not available_nodes:
-            raise Exception(f"No nodes available for retry of chunk {start}-{end}")
 
+            chunk_tasks[chunk_id]["status"] = "failed"
+
+            raise Exception(
+                f"[Chunk {chunk_id}] No nodes available for retry of {start}-{end}"
+            )
+
+        # choose next node
         node = available_nodes[0]
 
-        logger.warning(f"[Retry] Reassigning chunk {start}-{end} → {node}")
+        chunk_tasks[chunk_id]["node"] = node
 
-    raise Exception(f"Chunk {start}-{end} failed after retries")
+        logger.warning(
+            f"[Chunk {chunk_id}] Reassigning {start}-{end} → {node}"
+        )
 
+    chunk_tasks[chunk_id]["status"] = "failed"
 
-
+    raise Exception(
+        f"[Chunk {chunk_id}] Failed after {max_attempts} attempts ({start}-{end})"
+    )
 
 
 @app.post("/distributed_task", tags=["Compute"])
 async def distributed_task(req: TaskRequest):
+
+    chunk_assignments.clear()
 
     task_name = req.task
     total_start = req.start
@@ -334,9 +371,10 @@ async def distributed_task(req: TaskRequest):
     remainder = range_size % total_nodes
 
     current = total_start
-    results = []
 
+    results = []
     tasks = []
+    task_chunk_map = []
 
     for i, node in enumerate(all_nodes):
 
@@ -345,29 +383,54 @@ async def distributed_task(req: TaskRequest):
 
         logger.info(f"Assigning chunk {current}-{end} → {node}")
 
-        chunk_assignments.append((node, current, end))
+        chunk_id = str(uuid.uuid4())
+
+        chunk_tasks[chunk_id] = {
+            "node": node,
+            "start": current,
+            "end": end,
+            "status": "running",
+            "result": None
+        }
+
+        chunk_assignments.append((chunk_id, node, current, end))
 
         if node == NODE_ID:
             # local compute
             task_func = get_task(task_name)
             local_result = task_func(current, end)
+
+            chunk_tasks[chunk_id]["status"] = "completed"
+            chunk_tasks[chunk_id]["result"] = local_result
+
             results.append(local_result)
 
         else:
-            tasks.append(
-                execute_with_retry(node, task_name, current, end, all_nodes)
-            )
+            task = execute_with_retry(node, task_name, current, end, all_nodes)
+
+            tasks.append(task)
+            task_chunk_map.append(chunk_id)
 
         current = end + 1
+
     logger.info(f"Chunk assignments: {chunk_assignments}")
-    peer_results = await asyncio.gather(*tasks)
 
-    for r in peer_results:
+    if tasks:
+        peer_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if r is None:
-            raise Exception("Distributed task failed due to missing chunk")
+        for chunk_id, r in zip(task_chunk_map, peer_results):
 
-        results.append(r)
+            if isinstance(r, Exception):
+                logger.error(f"Chunk {chunk_id} failed: {r}")
+                raise r
+
+            if r is None:
+                raise Exception("Distributed task failed due to missing chunk")
+
+            chunk_tasks[chunk_id]["status"] = "completed"
+            chunk_tasks[chunk_id]["result"] = r
+
+            results.append(r)
 
     final = sum(results)
 
@@ -377,7 +440,6 @@ async def distributed_task(req: TaskRequest):
         "task": task_name,
         "result": final
     }
-
 
 
 
@@ -591,6 +653,10 @@ async def benchmark():
     }
 
 
+@app.get("/chunk_status", tags=["Debug"])
+def chunk_status():
+    return chunk_tasks
+
 
 def show_startup_banner():
     print("\n")
@@ -604,3 +670,4 @@ def show_startup_banner():
     print("Resource Mon : Enabled")
     print("=====================================")
     print("\n")
+
