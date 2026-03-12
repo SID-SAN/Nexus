@@ -10,7 +10,7 @@ Nodes connect to a central relay server and distribute workloads across availabl
 
 # Version
 
-Current Release: **v3.0.0**
+Current Release: **v3.1.0**
 
 ---
 
@@ -27,17 +27,17 @@ Each node executes its assigned task and sends the result back to the requesting
 # Architecture
 
 ```
-        ┌───────────────┐
-        │   Relay Node  │
-        │  (WebSocket)  │
-        └───────┬───────┘
-                │
-        ┌───────┴────────┐
-        │                │
-   ┌─────────┐      ┌─────────┐
-   │ Node 1  │      │ Node 2  │
-   │Compute  │      │Compute  │
-   └─────────┘      └─────────┘
+                 ┌─────────────────┐
+                 │   Relay Server  │
+                 │ (WebSocket Hub) │
+                 └────────┬────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          │               │               │
+     ┌─────────┐     ┌─────────┐     ┌─────────┐
+     │ Node 1  │     │ Node 2  │     │ Node 3  │
+     │Compute  │     │Compute  │     │Compute  │
+     └─────────┘     └─────────┘     └─────────┘
 ```
 
 Components:
@@ -79,6 +79,15 @@ Tasks are assigned to nodes with the lowest CPU and RAM utilization.
 
 Nexus supports multiple compute tasks through a modular registry system.
 
+### Fault Tolerant Execution
+
+Nexus automatically retries distributed tasks if a worker node fails during execution.  
+Chunks are reassigned to available nodes to ensure job completion.
+
+### Organized API Documentation
+
+FastAPI endpoints are grouped using tags, providing a clean and structured API interface in `/docs`.
+
 ---
 
 # Supported Distributed Tasks
@@ -90,6 +99,8 @@ Nexus supports multiple compute tasks through a modular registry system.
 | `vector_sum`    | Sum of squared numbers          |
 | `factorial_sum` | Sum of factorial values         |
 | `fibonacci_sum` | Sum of fibonacci numbers        |
+| `power_sum`     | Sum of fifth powers             |
+
 
 New tasks can be easily added through the **task registry**.
 
@@ -320,7 +331,7 @@ Internet-connected nodes using relay transport
 
 ### v3
 
-Resource-aware distributed compute framework
+Resource-aware distributed compute framework with retry-based fault tolerance
 
 ### v4 (Planned)
 
