@@ -293,14 +293,20 @@ async def execute_with_retry(node, task, start, end, available_nodes):
         attempts += 1
 
         # choose new node
+        # remove failed node
         available_nodes = [n for n in available_nodes if n != node]
+
+        # refresh cluster state
+        alive_nodes = fetch_nodes()
+
+        available_nodes = [n for n in available_nodes if n in alive_nodes]
 
         if not available_nodes:
             raise Exception(f"No nodes available for retry of chunk {start}-{end}")
 
         node = available_nodes[0]
 
-        logger.warning(f"Retrying chunk {start}-{end} on {node}")
+        logger.warning(f"[Retry] Reassigning chunk {start}-{end} → {node}")
 
     raise Exception(f"Chunk {start}-{end} failed after retries")
 
@@ -353,7 +359,7 @@ async def distributed_task(req: TaskRequest):
             )
 
         current = end + 1
-
+    logger.info(f"Chunk assignments: {chunk_assignments}")
     peer_results = await asyncio.gather(*tasks)
 
     for r in peer_results:

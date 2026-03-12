@@ -46,4 +46,4 @@ async def send_task_to_node(target_node, task, start, end):
         waited += 0.1
 
     print(f"[Task] Timeout waiting for result from {target_node}")
-    raise TimeoutError(f"Node {target_node} did not respond")
+    raise TimeoutError(f"{target_node} did not respond")
