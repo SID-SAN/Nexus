@@ -4,7 +4,7 @@ import os
 from fastapi import UploadFile, File
 from fastapi.responses import FileResponse
 import uuid
-from job_storage import router as job_router
+from relay.job_storage import router as job_router
 
 JOB_STORAGE = "jobs"
 
