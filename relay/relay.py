@@ -1,7 +1,17 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import json
+import os
+from fastapi import UploadFile, File
+from fastapi.responses import FileResponse
+import uuid
+from job_storage import router as job_router
+
+JOB_STORAGE = "jobs"
+
+os.makedirs(JOB_STORAGE, exist_ok=True)
 
 app = FastAPI()
+app.include_router(job_router)
 
 connected_nodes = {}
 node_resources = {}
@@ -80,3 +90,30 @@ def cluster_status():
         "connected_nodes": list(connected_nodes.keys()),
         "resources": node_resources
     }
+
+
+@app.post("/submit_job_package")
+async def submit_job_package(file: UploadFile = File(...)):
+
+    job_id = str(uuid.uuid4())
+
+    path = f"{JOB_STORAGE}/{job_id}.zip"
+
+    with open(path, "wb") as f:
+        f.write(await file.read())
+
+    return {
+        "job_id": job_id,
+        "status": "uploaded"
+    }
+
+
+@app.get("/jobs/{job_id}")
+def download_job(job_id: str):
+
+    path = f"{JOB_STORAGE}/{job_id}.zip"
+
+    if not os.path.exists(path):
+        return {"error": "job not found"}
+
+    return FileResponse(path)
