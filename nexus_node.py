@@ -9,7 +9,7 @@ def start_node(node_id, port):
 
     subprocess.run([
         "uvicorn",
-        "node:app",
+        "node_server:app",
         "--host",
         "0.0.0.0",
         "--port",
