@@ -41,6 +41,29 @@ async def heartbeat_loop():
                 connected_nodes.pop(node_id, None)
 
 
+def apply_reducer(results, reducer):
+
+    values = list(results.values())
+
+    if reducer == "sum":
+        return sum(values)
+
+    if reducer == "avg":
+        return sum(values) / len(values)
+
+    if reducer == "max":
+        return max(values)
+
+    if reducer == "min":
+        return min(values)
+
+    if reducer == "list":
+        return values
+
+    # fallback
+    return values
+
+
 # -----------------------------
 # Basic endpoints
 # -----------------------------
@@ -94,8 +117,11 @@ def download_job(job_id: str):
 # -----------------------------
 
 @app.post("/submit_job")
-async def submit_job(file: UploadFile = File(...), chunks: int = Form(...)):
-
+async def submit_job(
+    file: UploadFile = File(...),
+    chunks: int = Form(...),
+    reducer: str = Form("sum")
+):
     job_id = str(uuid.uuid4())
 
     path = os.path.join(JOB_DIR, f"{job_id}.zip")
@@ -108,7 +134,8 @@ async def submit_job(file: UploadFile = File(...), chunks: int = Form(...)):
         "queue": list(range(1, chunks + 1)),
         "results": {},
         "completed": 0,
-        "status": "running"
+        "status": "running",
+        "reducer": reducer
     }
 
     return {
@@ -250,8 +277,7 @@ def job_result(job_id: str):
     if job["status"] != "completed":
         return {"status": "job still running"}
 
-    final_result = sum(job["results"].values())
-
+    final_result = apply_reducer(job["results"], job["reducer"])
     return {
         "job_id": job_id,
         "result": final_result
