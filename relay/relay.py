@@ -56,24 +56,6 @@ def cluster_status():
     }
 
 
-# -----------------------------
-# Job package upload
-# -----------------------------
-
-@app.post("/submit_job_package")
-async def submit_job_package(file: UploadFile = File(...)):
-
-    job_id = str(uuid.uuid4())
-    path = f"{JOB_STORAGE}/{job_id}.zip"
-
-    with open(path, "wb") as f:
-        f.write(await file.read())
-
-    return {
-        "job_id": job_id,
-        "status": "uploaded"
-    }
-
 
 @app.get("/jobs/{job_id}")
 def download_job(job_id: str):
@@ -91,7 +73,14 @@ def download_job(job_id: str):
 # -----------------------------
 
 @app.post("/submit_job")
-def submit_job(job_id: str, chunks: int):
+async def submit_job(file: UploadFile = File(...), chunks: int = Form(...)):
+
+    job_id = str(uuid.uuid4())
+
+    path = os.path.join(JOB_DIR, f"{job_id}.zip")
+
+    with open(path, "wb") as f:
+        f.write(await file.read())
 
     jobs[job_id] = {
         "chunks": chunks,
@@ -99,14 +88,11 @@ def submit_job(job_id: str, chunks: int):
         "results": {}
     }
 
-    print(f"[Job] Created job {job_id} with {chunks} chunks")
-
     return {
         "job_id": job_id,
         "chunks": chunks,
         "status": "job_created"
     }
-
 
 # -----------------------------
 # WebSocket relay
