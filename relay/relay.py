@@ -155,32 +155,27 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
             # -----------------------------
             elif msg_type == "request_chunk":
 
-                job_id = message["payload"]["job_id"]
+                for job_id, job in jobs.items():
 
-                job = jobs.get(job_id)
+                    if job["queue"]:
 
-                if not job:
-                    continue
+                        chunk = job["queue"].pop(0)
 
-                if not job["queue"]:
-                    continue
+                        response = {
+                            "type": "assign_chunk",
+                            "target": node_id,
+                            "payload": {
+                                "job_id": job_id,
+                                "chunk": chunk,
+                                "total_chunks": job["chunks"]
+                            }
+                        }
 
-                chunk = job["queue"].pop(0)
+                        await websocket.send_text(json.dumps(response))
 
-                response = {
-                    "type": "assign_chunk",
-                    "target": node_id,
-                    "payload": {
-                        "job_id": job_id,
-                        "chunk": chunk,
-                        "total_chunks": job["chunks"]
-                    }
-                }
+                        print(f"[Scheduler] Assigned chunk {chunk} → {node_id}")
 
-                await websocket.send_text(json.dumps(response))
-
-                print(f"[Scheduler] Assigned chunk {chunk} → {node_id}")
-
+                        break
             # -----------------------------
             # Node submits result
             # -----------------------------

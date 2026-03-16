@@ -13,6 +13,7 @@ RELAY_URL = f"wss://nexus-relay-5wog.onrender.com/ws/{NODE_ID}"
 
 websocket_connection = None
 pending_results = {}
+job_cache = {}
 
 
 async def connect_to_relay():
@@ -28,8 +29,9 @@ async def connect_to_relay():
 
                 websocket_connection = websocket
                 print(f"[Relay] Connected as {NODE_ID}")
-                asyncio.create_task(request_work_loop())
-
+                if not hasattr(connect_to_relay, "work_loop_started"):
+                    asyncio.create_task(request_work_loop())
+                    connect_to_relay.work_loop_started = True
 
                 while True:
                     message = await websocket.recv()
@@ -114,7 +116,6 @@ async def connect_to_relay():
 
                         try:
                             # download job from relay
-                            job_cache = {}
 
                             if job_id not in job_cache:
                                 job_cache[job_id] = download_job(job_id)
@@ -189,15 +190,17 @@ async def request_work_loop():
 
         await asyncio.sleep(2)
 
-        if websocket_connection is None:
+        ws = websocket_connection
+
+        if ws is None or ws.closed:
             continue
 
         request = {
             "type": "request_chunk",
-            "source": NODE_ID,
-                    }
+            "source": NODE_ID
+        }
 
         try:
-            await websocket_connection.send(json.dumps(request))
+            await ws.send(json.dumps(request))
         except:
             pass
