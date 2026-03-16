@@ -73,6 +73,7 @@ def download_job(job_id: str):
 # Create distributed job
 # -----------------------------
 JOB_DIR = "jobs"
+
 os.makedirs(JOB_DIR, exist_ok=True)
 @app.post("/submit_job")
 async def submit_job(file: UploadFile = File(...), chunks: int = Form(...)):
@@ -87,7 +88,9 @@ async def submit_job(file: UploadFile = File(...), chunks: int = Form(...)):
     jobs[job_id] = {
         "chunks": chunks,
         "queue": list(range(1, chunks + 1)),
-        "results": {}
+        "results": {},
+        "completed": 0,
+        "status": "running"
     }
 
     return {
@@ -159,19 +162,22 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
             # -----------------------------
             elif msg_type == "submit_result":
 
-                payload = message["payload"]
+                job_id = message["payload"]["job_id"]
+                chunk = message["payload"]["chunk"]
+                result = message["payload"]["result"]
 
-                job_id = payload["job_id"]
-                chunk = payload["chunk"]
-                result = payload["result"]
+                job = jobs.get(job_id)
 
-                if job_id not in jobs:
-                    continue
+                if not job:
+                    return
 
-                jobs[job_id]["results"][chunk] = result
+                job["results"][chunk] = result
+                job["completed"] += 1
 
-                print(f"[Result] Job {job_id} chunk {chunk} completed")
+                print(f"[JOB] chunk {chunk} completed ({job['completed']}/{job['chunks']})")
 
+                if job["completed"] == job["chunks"]:
+                    job["status"] = "completed"
             # -----------------------------
             # Old relay routing (v3 compatibility)
             # -----------------------------
@@ -197,3 +203,37 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
         connected_nodes.pop(node_id, None)
         node_resources.pop(node_id, None)
+
+
+@app.get("/job_status/{job_id}")
+def job_status(job_id: str):
+
+    job = jobs.get(job_id)
+
+    if not job:
+        return {"error": "job not found"}
+
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "completed": job["completed"],
+        "total_chunks": job["chunks"]
+    }
+
+@app.get("/job_result/{job_id}")
+def job_result(job_id: str):
+
+    job = jobs.get(job_id)
+
+    if not job:
+        return {"error": "job not found"}
+
+    if job["status"] != "completed":
+        return {"status": "job still running"}
+
+    final_result = sum(job["results"].values())
+
+    return {
+        "job_id": job_id,
+        "result": final_result
+    }
