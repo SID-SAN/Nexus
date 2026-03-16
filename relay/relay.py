@@ -4,6 +4,7 @@ import os
 import uuid
 from fastapi.responses import FileResponse
 from fastapi import UploadFile, File
+from fastapi import Form
 
 app = FastAPI()
 
@@ -71,7 +72,8 @@ def download_job(job_id: str):
 # -----------------------------
 # Create distributed job
 # -----------------------------
-
+JOB_DIR = "jobs"
+os.makedirs(JOB_DIR, exist_ok=True)
 @app.post("/submit_job")
 async def submit_job(file: UploadFile = File(...), chunks: int = Form(...)):
 
