@@ -169,6 +169,15 @@ async def connect_to_relay():
 
                         pending_results[source] = result
 
+                    elif msg_type == "heartbeat":
+
+                        response = {
+                            "type": "heartbeat_ack",
+                            "source": NODE_ID
+                        }
+
+                        await websocket.send(json.dumps(response))
+
         except Exception as e:
             print(f"[Relay] Connection lost. Reconnecting... {e}")
             await asyncio.sleep(3)

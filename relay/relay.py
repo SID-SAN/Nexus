@@ -5,8 +5,12 @@ import uuid
 from fastapi.responses import FileResponse
 from fastapi import UploadFile, File
 from fastapi import Form
+import asyncio
 
 app = FastAPI()
+@app.on_event("startup")
+async def start_heartbeat():
+    asyncio.create_task(heartbeat_loop())
 
 # -----------------------------
 # Storage
@@ -20,6 +24,23 @@ node_resources = {}
 
 # v4 job queue
 jobs = {}
+
+
+async def heartbeat_loop():
+
+    while True:
+
+        await asyncio.sleep(20)
+
+        for node_id, ws in list(connected_nodes.items()):
+
+            try:
+                await ws.send_text(json.dumps({
+                    "type": "heartbeat"
+                }))
+            except:
+                pass
+
 
 # -----------------------------
 # Basic endpoints
