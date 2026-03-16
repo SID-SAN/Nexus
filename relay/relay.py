@@ -16,8 +16,8 @@ async def start_heartbeat():
 # Storage
 # -----------------------------
 
-JOB_STORAGE = "jobs"
-os.makedirs(JOB_STORAGE, exist_ok=True)
+JOB_DIR = "jobs"
+os.makedirs(JOB_DIR, exist_ok=True)
 
 connected_nodes = {}
 node_resources = {}
@@ -35,11 +35,10 @@ async def heartbeat_loop():
         for node_id, ws in list(connected_nodes.items()):
 
             try:
-                await ws.send_text(json.dumps({
-                    "type": "heartbeat"
-                }))
+                if ws.client_state.name == "CONNECTED":
+                    await ws.send_text(json.dumps({"type": "heartbeat"}))
             except:
-                pass
+                connected_nodes.pop(node_id, None)
 
 
 # -----------------------------
@@ -82,7 +81,7 @@ def cluster_status():
 @app.get("/jobs/{job_id}")
 def download_job(job_id: str):
 
-    path = f"{JOB_STORAGE}/{job_id}.zip"
+    path = f"{JOB_DIR}/{job_id}.zip"
 
     if not os.path.exists(path):
         return {"error": "job not found"}
@@ -93,9 +92,7 @@ def download_job(job_id: str):
 # -----------------------------
 # Create distributed job
 # -----------------------------
-JOB_DIR = "jobs"
 
-os.makedirs(JOB_DIR, exist_ok=True)
 @app.post("/submit_job")
 async def submit_job(file: UploadFile = File(...), chunks: int = Form(...)):
 
@@ -139,6 +136,12 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
             message = json.loads(data)
 
             msg_type = message.get("type")
+
+            # -----------------------------
+            # Heartbeat ACK
+            # -----------------------------
+            if msg_type == "heartbeat_ack":
+                continue
 
             # -----------------------------
             # Resource updates
@@ -190,7 +193,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job = jobs.get(job_id)
 
                 if not job:
-                    return
+                    continue
 
                 job["results"][chunk] = result
                 job["completed"] += 1
