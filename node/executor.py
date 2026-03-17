@@ -1,9 +1,9 @@
 import importlib.util
-import sys
 import os
 import io
+import asyncio
 from contextlib import redirect_stdout, redirect_stderr
-import threading
+
 
 def execute_job(job_path, chunk_id, total_chunks):
 
@@ -16,39 +16,17 @@ def execute_job(job_path, chunk_id, total_chunks):
     if not hasattr(module, "run"):
         raise Exception("main.py must define run(chunk_id, total_chunks)")
 
-    # capture logs
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
 
     try:
         with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            result_container = {"result": None, "error": None}
-
-            def target():
-                try:
-                    result_container["result"] = module.run(chunk_id, total_chunks)
-                except Exception as e:
-                    result_container["error"] = str(e)
-
-            thread = threading.Thread(target=target)
-            thread.start()
-
-            thread.join(timeout=60)  # ⏱ 60 sec timeout
-
-            if thread.is_alive():
-                return {
-                    "result": None,
-                    "logs": stdout_buffer.getvalue(),
-                    "error": "Execution timed out"
-                }
-            
-        logs = stdout_buffer.getvalue()
-        errors = stderr_buffer.getvalue()
+            result = module.run(chunk_id, total_chunks)
 
         return {
             "result": result,
-            "logs": logs,
-            "error": errors
+            "logs": stdout_buffer.getvalue(),
+            "error": stderr_buffer.getvalue()
         }
 
     except Exception as e:
@@ -56,4 +34,23 @@ def execute_job(job_path, chunk_id, total_chunks):
             "result": None,
             "logs": stdout_buffer.getvalue(),
             "error": str(e)
+        }
+
+
+def execute_job_with_timeout(job_path, chunk_id, total_chunks, timeout=60):
+
+    async def run_with_timeout():
+        return await asyncio.to_thread(
+            execute_job, job_path, chunk_id, total_chunks
+        )
+
+    try:
+        return asyncio.run(
+            asyncio.wait_for(run_with_timeout(), timeout=timeout)
+        )
+    except asyncio.TimeoutError:
+        return {
+            "result": None,
+            "logs": "",
+            "error": f"Execution timed out after {timeout} seconds"
         }

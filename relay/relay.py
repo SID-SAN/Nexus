@@ -44,7 +44,11 @@ async def heartbeat_loop():
 
 def apply_reducer(results, reducer):
 
-    values = list(results.values())
+    # remove None results
+    values = [v for v in results.values() if v is not None]
+
+    if not values:
+        return None
 
     if reducer == "sum":
         return sum(values)
@@ -61,7 +65,6 @@ def apply_reducer(results, reducer):
     if reducer == "list":
         return values
 
-    # fallback
     return values
 
 
@@ -229,12 +232,17 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["results"][chunk] = message["payload"]["result"]
                 job["logs"][chunk] = message["payload"].get("logs", "")
                 job["errors"][chunk] = message["payload"].get("error", "")
-                job["status_map"][chunk] = "completed"
                 job["completed"] += 1
 
-                print(f"[JOB] chunk {chunk} completed ({job['completed']}/{job['chunks']})")
+                # mark chunk complete
+                job["status_map"][chunk] = "completed"
 
-                if job["completed"] == job["chunks"]:
+                #  ADD THIS HERE
+                if any(status == "failed" for status in job["status_map"].values()):
+                    job["status"] = "failed"
+
+                # mark job completed if all done
+                elif job["completed"] == job["chunks"]:
                     job["status"] = "completed"
             # -----------------------------
             # Old relay routing (v3 compatibility)
@@ -287,10 +295,18 @@ def job_result(job_id: str):
     if not job:
         return {"error": "job not found"}
 
+    if job["status"] == "failed":
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "errors": job["errors"]
+        }
+
     if job["status"] != "completed":
         return {"status": "job still running"}
 
     final_result = apply_reducer(job["results"], job["reducer"])
+
     return {
         "job_id": job_id,
         "result": final_result
