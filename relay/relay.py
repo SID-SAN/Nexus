@@ -386,23 +386,63 @@ def dashboard():
     <html>
     <head>
         <title>Nexus Dashboard</title>
+
         <style>
-            body { font-family: Arial; background: #0f172a; color: white; }
-            h1 { color: #38bdf8; }
+            body {
+                font-family: Arial;
+                background: #0f172a;
+                color: white;
+                margin: 0;
+                padding: 20px;
+            }
+
+            h1 {
+                color: #38bdf8;
+            }
+
+            .grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 20px;
+            }
+
             .card {
                 background: #1e293b;
                 padding: 15px;
-                margin: 10px;
-                border-radius: 10px;
+                border-radius: 12px;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            }
+
+            .status-running { color: #facc15; }
+            .status-completed { color: #22c55e; }
+            .status-failed { color: #ef4444; }
+
+            .progress-bar {
+                width: 100%;
+                background: #334155;
+                border-radius: 8px;
+                overflow: hidden;
+                margin-top: 10px;
+            }
+
+            .progress-fill {
+                height: 10px;
+                background: #38bdf8;
+                width: 0%;
             }
         </style>
+
     </head>
+
     <body>
 
         <h1>⚡ Nexus Cluster Dashboard</h1>
 
-        <div id="nodes" class="card"></div>
-        <div id="jobs" class="card"></div>
+        <h2>🖥️ Nodes</h2>
+        <div id="nodes" class="grid"></div>
+
+        <h2>📦 Jobs</h2>
+        <div id="jobs" class="grid"></div>
 
         <script>
 
@@ -411,19 +451,38 @@ def dashboard():
             const nodes = await fetch('/cluster_status').then(r => r.json());
             const jobs = await fetch('/all_jobs').then(r => r.json());
 
-            document.getElementById("nodes").innerHTML =
-                "<h2>Nodes</h2>" +
-                Object.entries(jobs).map(([id, j]) => `
-                    <div class="card">
-                        <b>Job:</b> ${id}<br>
-                        <b>Status:</b> ${j.status}<br>
-                        <b>Progress:</b> ${j.completed}/${j.total}
-                    </div>
-                `).join('')
+            // ---- NODES ----
+            const nodeHTML = nodes.connected_nodes.map(n => `
+                <div class="card">
+                    <b>Node:</b> ${n}
+                </div>
+            `).join('');
 
-            document.getElementById("jobs").innerHTML =
-                "<h2>Jobs</h2>" +
-                JSON.stringify(jobs, null, 2);
+            document.getElementById("nodes").innerHTML = nodeHTML;
+
+            // ---- JOBS ----
+            const jobHTML = Object.entries(jobs).map(([id, j]) => {
+
+                let percent = Math.floor((j.completed / j.total) * 100);
+
+                let statusClass = "status-running";
+                if (j.status === "completed") statusClass = "status-completed";
+                if (j.status === "failed") statusClass = "status-failed";
+
+                return `
+                    <div class="card">
+                        <b>Job ID:</b> ${id}<br>
+                        <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
+                        <b>Progress:</b> ${j.completed}/${j.total}
+
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width:${percent}%"></div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById("jobs").innerHTML = jobHTML;
         }
 
         setInterval(fetchData, 2000);
