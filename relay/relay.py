@@ -133,6 +133,8 @@ async def submit_job(
         "chunks": chunks,
         "queue": list(range(1, chunks + 1)),
         "results": {},
+        "logs": {},      # NEW
+        "errors": {},    # NEW
         "completed": 0,
         "status": "running",
         "reducer": reducer
@@ -217,7 +219,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if not job:
                     continue
 
-                job["results"][chunk] = result
+                job["results"][chunk] = message["payload"]["result"]
+                job["logs"][chunk] = message["payload"].get("logs", "")
+                job["errors"][chunk] = message["payload"].get("error", "")
                 job["completed"] += 1
 
                 print(f"[JOB] chunk {chunk} completed ({job['completed']}/{job['chunks']})")
@@ -281,4 +285,18 @@ def job_result(job_id: str):
     return {
         "job_id": job_id,
         "result": final_result
+    }
+
+@app.get("/job_logs/{job_id}")
+def job_logs(job_id: str):
+
+    job = jobs.get(job_id)
+
+    if not job:
+        return {"error": "job not found"}
+
+    return {
+        "job_id": job_id,
+        "logs": job["logs"],
+        "errors": job["errors"]
     }

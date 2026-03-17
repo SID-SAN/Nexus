@@ -74,7 +74,9 @@ async def connect_to_relay():
                                 "payload": {
                                     "job_id": job_id,
                                     "chunk": chunk,
-                                    "result": result
+                                    "result": result["result"],
+                                    "logs": result["logs"],
+                                    "error": result["error"]
                                 }
                             }
 
