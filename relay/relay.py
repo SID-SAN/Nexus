@@ -396,9 +396,7 @@ def dashboard():
                 padding: 20px;
             }
 
-            h1 {
-                color: #38bdf8;
-            }
+            h1 { color: #38bdf8; }
 
             .grid {
                 display: grid;
@@ -411,6 +409,24 @@ def dashboard():
                 padding: 15px;
                 border-radius: 12px;
                 box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            }
+
+            input, select {
+                padding: 8px;
+                width: 100%;
+                margin-top: 5px;
+                border-radius: 6px;
+                border: none;
+            }
+
+            button {
+                padding: 10px;
+                background: #38bdf8;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                margin-top: 10px;
+                width: 100%;
             }
 
             .status-running { color: #facc15; }
@@ -438,13 +454,94 @@ def dashboard():
 
         <h1>⚡ Nexus Cluster Dashboard</h1>
 
+        <!-- JOB SUBMISSION -->
+        <h2>🚀 Submit Job</h2>
+
+        <div class="card">
+            <input type="file" id="file"><br><br>
+
+            <input type="number" id="chunks" placeholder="Chunks" value="5"><br><br>
+
+            <select id="reducer">
+                <option value="sum">sum</option>
+                <option value="avg">avg</option>
+                <option value="max">max</option>
+                <option value="min">min</option>
+                <option value="list">list</option>
+            </select><br><br>
+
+            <button onclick="submitJob()">Submit Job</button>
+
+            <p id="submitStatus"></p>
+        </div>
+
+        <!-- NODES -->
         <h2>🖥️ Nodes</h2>
         <div id="nodes" class="grid"></div>
 
+        <!-- JOBS -->
         <h2>📦 Jobs</h2>
         <div id="jobs" class="grid"></div>
 
         <script>
+
+        async function submitJob() {
+
+            const file = document.getElementById("file").files[0];
+            const chunks = document.getElementById("chunks").value;
+            const reducer = document.getElementById("reducer").value;
+
+            if (!file) {
+                alert("Please upload a file");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("chunks", chunks);
+            formData.append("reducer", reducer);
+
+            const res = await fetch('/submit_job', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await res.json();
+
+            document.getElementById("submitStatus").innerText =
+                "Job submitted: " + data.job_id;
+
+            trackJob(data.job_id);
+        }
+
+
+        async function trackJob(job_id) {
+
+            let interval = setInterval(async () => {
+
+                const status = await fetch(`/job_status/${job_id}`).then(r => r.json());
+
+                if (status.status === "completed") {
+
+                    clearInterval(interval);
+
+                    const result = await fetch(`/job_result/${job_id}`).then(r => r.json());
+
+                    alert("✅ Job Completed!\\nResult: " + JSON.stringify(result.result));
+                }
+
+                if (status.status === "failed") {
+
+                    clearInterval(interval);
+
+                    const logs = await fetch(`/job_logs/${job_id}`).then(r => r.json());
+
+                    alert("❌ Job Failed!\\nErrors: " + JSON.stringify(logs.errors));
+                }
+
+            }, 2000);
+        }
+
 
         async function fetchData() {
 
