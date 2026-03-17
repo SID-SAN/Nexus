@@ -61,12 +61,13 @@ async def connect_to_relay():
 
                         try:
 
+                            # ✅ FIX: define job_path properly
                             if job_id not in job_cache:
                                 job_cache[job_id] = download_job(job_id)
 
                             job_path = job_cache[job_id]
 
-                            result = execute_job(job_path, chunk, total_chunks)
+                            exec_output = execute_job(job_path, chunk, total_chunks)
 
                             response = {
                                 "type": "submit_result",
@@ -74,9 +75,9 @@ async def connect_to_relay():
                                 "payload": {
                                     "job_id": job_id,
                                     "chunk": chunk,
-                                    "result": result["result"],
-                                    "logs": result["logs"],
-                                    "error": result["error"]
+                                    "result": exec_output.get("result"),
+                                    "logs": exec_output.get("logs", ""),
+                                    "error": exec_output.get("error", "")
                                 }
                             }
 
@@ -85,8 +86,22 @@ async def connect_to_relay():
                             print(f"[V4] Submitted result for chunk {chunk}")
 
                         except Exception as e:
-                            print(f"[V4] Job execution failed: {e}")
 
+                            response = {
+                                "type": "submit_result",
+                                "source": NODE_ID,
+                                "payload": {
+                                    "job_id": job_id,
+                                    "chunk": chunk,
+                                    "result": None,
+                                    "logs": "",
+                                    "error": str(e)
+                                }
+                            }
+
+                            await websocket.send(json.dumps(response))
+
+                            print(f"[V4] Execution crashed: {e}")
                     # -----------------------------
                     # V3 compatibility
                     # -----------------------------
