@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi import UploadFile, File
 from fastapi import Form
 import asyncio
+import time
 
 app = FastAPI()
 @app.on_event("startup")
@@ -133,8 +134,11 @@ async def submit_job(
         "chunks": chunks,
         "queue": list(range(1, chunks + 1)),
         "results": {},
-        "logs": {},      # NEW
-        "errors": {},    # NEW
+        "logs": {},
+        "errors": {},
+        "status_map": {},
+        "assigned_at": {},
+        "retries": {},    
         "completed": 0,
         "status": "running",
         "reducer": reducer
@@ -189,6 +193,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if job["queue"]:
 
                         chunk = job["queue"].pop(0)
+                        job["status_map"][chunk] = "running"
+                        job["assigned_at"][chunk] = time.time()
+                        job["retries"].setdefault(chunk, 0)
 
                         response = {
                             "type": "assign_chunk",
@@ -222,6 +229,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["results"][chunk] = message["payload"]["result"]
                 job["logs"][chunk] = message["payload"].get("logs", "")
                 job["errors"][chunk] = message["payload"].get("error", "")
+                job["status_map"][chunk] = "completed"
                 job["completed"] += 1
 
                 print(f"[JOB] chunk {chunk} completed ({job['completed']}/{job['chunks']})")
@@ -262,12 +270,13 @@ def job_status(job_id: str):
 
     if not job:
         return {"error": "job not found"}
-
+    
     return {
         "job_id": job_id,
         "status": job["status"],
         "completed": job["completed"],
-        "total_chunks": job["chunks"]
+        "total_chunks": job["chunks"],
+        "chunk_status": job["status_map"]
     }
 
 @app.get("/job_result/{job_id}")
@@ -300,3 +309,53 @@ def job_logs(job_id: str):
         "logs": job["logs"],
         "errors": job["errors"]
     }
+
+
+import asyncio
+import time
+
+MAX_RETRIES = 2
+CHUNK_TIMEOUT = 60  # seconds
+
+
+async def monitor_jobs():
+
+    while True:
+
+        await asyncio.sleep(5)
+
+        for job_id, job in jobs.items():
+
+            for chunk, status in list(job["status_map"].items()):
+
+                if status != "running":
+                    continue
+
+                assigned_time = job["assigned_at"].get(chunk)
+
+                if not assigned_time:
+                    continue
+
+                if time.time() - assigned_time > CHUNK_TIMEOUT:
+
+                    retries = job["retries"].get(chunk, 0)
+
+                    if retries < MAX_RETRIES:
+
+                        print(f"[Retry] chunk {chunk} for job {job_id}")
+
+                        job["queue"].append(chunk)
+                        job["status_map"][chunk] = "pending"
+                        job["retries"][chunk] += 1
+
+                    else:
+
+                        print(f"[Failed] chunk {chunk} exceeded retries")
+
+                        job["status_map"][chunk] = "failed"
+                        job["errors"][chunk] = "Max retries exceeded"
+
+
+@app.on_event("startup")
+async def start_monitor():
+    asyncio.create_task(monitor_jobs())

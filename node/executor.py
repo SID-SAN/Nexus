@@ -3,7 +3,7 @@ import sys
 import os
 import io
 from contextlib import redirect_stdout, redirect_stderr
-
+import threading
 
 def execute_job(job_path, chunk_id, total_chunks):
 
@@ -22,8 +22,26 @@ def execute_job(job_path, chunk_id, total_chunks):
 
     try:
         with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            result = module.run(chunk_id, total_chunks)
+            result_container = {"result": None, "error": None}
 
+            def target():
+                try:
+                    result_container["result"] = module.run(chunk_id, total_chunks)
+                except Exception as e:
+                    result_container["error"] = str(e)
+
+            thread = threading.Thread(target=target)
+            thread.start()
+
+            thread.join(timeout=60)  # ⏱ 60 sec timeout
+
+            if thread.is_alive():
+                return {
+                    "result": None,
+                    "logs": stdout_buffer.getvalue(),
+                    "error": "Execution timed out"
+                }
+            
         logs = stdout_buffer.getvalue()
         errors = stderr_buffer.getvalue()
 
