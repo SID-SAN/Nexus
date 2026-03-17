@@ -375,3 +375,78 @@ async def monitor_jobs():
 @app.on_event("startup")
 async def start_monitor():
     asyncio.create_task(monitor_jobs())
+
+
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    return """
+    <html>
+    <head>
+        <title>Nexus Dashboard</title>
+        <style>
+            body { font-family: Arial; background: #0f172a; color: white; }
+            h1 { color: #38bdf8; }
+            .card {
+                background: #1e293b;
+                padding: 15px;
+                margin: 10px;
+                border-radius: 10px;
+            }
+        </style>
+    </head>
+    <body>
+
+        <h1>⚡ Nexus Cluster Dashboard</h1>
+
+        <div id="nodes" class="card"></div>
+        <div id="jobs" class="card"></div>
+
+        <script>
+
+        async function fetchData() {
+
+            const nodes = await fetch('/cluster_status').then(r => r.json());
+            const jobs = await fetch('/all_jobs').then(r => r.json());
+
+            document.getElementById("nodes").innerHTML =
+                "<h2>Nodes</h2>" +
+                Object.entries(jobs).map(([id, j]) => `
+                    <div class="card">
+                        <b>Job:</b> ${id}<br>
+                        <b>Status:</b> ${j.status}<br>
+                        <b>Progress:</b> ${j.completed}/${j.total}
+                    </div>
+                `).join('')
+
+            document.getElementById("jobs").innerHTML =
+                "<h2>Jobs</h2>" +
+                JSON.stringify(jobs, null, 2);
+        }
+
+        setInterval(fetchData, 2000);
+        fetchData();
+
+        </script>
+
+    </body>
+    </html>
+    """
+
+
+
+@app.get("/all_jobs")
+def all_jobs():
+
+    output = {}
+
+    for job_id, job in jobs.items():
+        output[job_id] = {
+            "status": job["status"],
+            "completed": job["completed"],
+            "total": job["chunks"]
+        }
+
+    return output
