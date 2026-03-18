@@ -70,7 +70,7 @@ async def connect_to_relay():
 
                                     if status_data["status"] == "cancelled":
                                         print(f"[V4] Skipping chunk {chunk} (job cancelled)")
-                                        return
+                                        continue
 
                             # download job if needed
                             if job_id not in job_cache:

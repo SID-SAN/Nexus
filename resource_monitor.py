@@ -21,8 +21,8 @@ async def resource_monitor_loop():
 
             ws = relay_client.websocket_connection
 
-            # If relay not connected yet
             if ws is None:
+                print("[Resource] No active connection, waiting...")
                 await asyncio.sleep(5)
                 continue
 
@@ -42,6 +42,7 @@ async def resource_monitor_loop():
             except Exception as e:
                 # connection probably dropped
                 print(f"[Resource] Failed to send update: {e}")
+                relay_client.websocket_connection = None
 
         except Exception as e:
             print(f"[Resource] Monitor error: {e}")
