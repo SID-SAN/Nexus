@@ -6,8 +6,10 @@ from config import NODE_ID
 from compute import compute_range_sum
 from node.downloader import download_job
 from node.executor import execute_job
+import aiohttp
 
 RELAY_URL = f"wss://nexus-relay-5wog.onrender.com/ws/{NODE_ID}"
+RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
 
 websocket_connection = None
 pending_results = {}
@@ -61,7 +63,16 @@ async def connect_to_relay():
 
                         try:
 
-                            # ✅ FIX: define job_path properly
+                            # 🔥 CHECK IF JOB CANCELLED
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(f"{RELAY_HTTP_URL}/job_status_simple/{job_id}") as resp:
+                                    status_data = await resp.json()
+
+                                    if status_data["status"] == "cancelled":
+                                        print(f"[V4] Skipping chunk {chunk} (job cancelled)")
+                                        return
+
+                            # download job if needed
                             if job_id not in job_cache:
                                 job_cache[job_id] = download_job(job_id)
 

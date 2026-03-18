@@ -659,3 +659,15 @@ def cancel_job(job_id: str):
         "job_id": job_id,
         "status": "cancelled"
     }
+
+
+
+@app.get("/job_status_simple/{job_id}")
+def job_status_simple(job_id: str):
+
+    job = jobs.get(job_id)
+
+    if not job:
+        return {"status": "not_found"}
+
+    return {"status": job["status"]}
