@@ -219,16 +219,25 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
             # Node submits result
             # -----------------------------
             elif msg_type == "submit_result":
-
                 job_id = message["payload"]["job_id"]
                 chunk = message["payload"]["chunk"]
                 result = message["payload"]["result"]
-
+                
                 job = jobs.get(job_id)
 
                 if not job:
-                    continue
+                    return
+                
+                # 🚫 ignore cancelled jobs
+                if job["status"] == "cancelled":
+                    return
 
+                chunk = message["payload"]["chunk"]
+
+                # 🚫 ignore duplicates
+                if chunk in job["results"]:
+                    return
+                
                 job["results"][chunk] = message["payload"]["result"]
                 job["logs"][chunk] = message["payload"].get("logs", "")
                 job["errors"][chunk] = message["payload"].get("error", "")
@@ -340,6 +349,9 @@ async def monitor_jobs():
 
         await asyncio.sleep(5)
 
+        if job["status"] != "running":
+            continue
+
         for job_id, job in jobs.items():
 
             for chunk, status in list(job["status_map"].items()):
@@ -432,6 +444,7 @@ def dashboard():
             .status-running { color: #facc15; }
             .status-completed { color: #22c55e; }
             .status-failed { color: #ef4444; }
+            .status-cancelled { color: #94a3b8; }
 
             .progress-bar {
                 width: 100%;
@@ -514,6 +527,22 @@ def dashboard():
             trackJob(data.job_id);
         }
 
+        
+        async function cancelJob(job_id) {
+
+            if (!confirm("Are you sure you want to cancel this job?")) {
+                return;
+            }
+
+            const res = await fetch(`/cancel_job/${job_id}`, {
+                method: "POST"
+            });
+
+            const data = await res.json();
+
+            alert("Job cancelled: " + job_id);
+        }
+
 
         async function trackJob(job_id) {
 
@@ -565,7 +594,8 @@ def dashboard():
                 let statusClass = "status-running";
                 if (j.status === "completed") statusClass = "status-completed";
                 if (j.status === "failed") statusClass = "status-failed";
-
+                if (j.status === "cancelled") statusClass = "status-cancelled";
+                
                 return `
                     <div class="card">
                         <b>Job ID:</b> ${id}<br>
@@ -575,6 +605,12 @@ def dashboard():
                         <div class="progress-bar">
                             <div class="progress-fill" style="width:${percent}%"></div>
                         </div>
+
+                        ${j.status === "running" ? `
+                            <button onclick="cancelJob('${id}')" style="background:#ef4444; margin-top:10px;">
+                                Cancel Job
+                            </button>
+                        ` : ""}
                     </div>
                 `;
             }).join('');
@@ -606,3 +642,20 @@ def all_jobs():
         }
 
     return output
+
+
+
+@app.post("/cancel_job/{job_id}")
+def cancel_job(job_id: str):
+
+    job = jobs.get(job_id)
+
+    if not job:
+        return {"error": "job not found"}
+
+    job["status"] = "cancelled"
+
+    return {
+        "job_id": job_id,
+        "status": "cancelled"
+    }
