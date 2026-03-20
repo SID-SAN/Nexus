@@ -498,6 +498,34 @@ def dashboard():
 
         <script>
 
+        async function viewLogs(job_id) {
+
+            document.getElementById("logPanel").style.display = "block";
+
+            const res = await fetch(`/job_logs/${job_id}`);
+            const data = await res.json();
+
+            let html = "";
+
+            for (let chunk in data.logs) {
+
+                html += `
+                    <div style="margin-bottom:10px; padding:10px; background:#1e293b; border-radius:8px;">
+                        <b>Chunk ${chunk}</b><br>
+                        <pre>${data.logs[chunk] || "No logs"}</pre>
+                        <pre style="color:red;">${data.errors[chunk] || ""}</pre>
+                    </div>
+                `;
+            }
+
+            document.getElementById("logContent").innerHTML = html;
+        }
+
+
+        function closeLogs() {
+            document.getElementById("logPanel").style.display = "none";
+        }        
+
         async function submitJob() {
 
             const file = document.getElementById("file").files[0];
@@ -597,7 +625,7 @@ def dashboard():
                 if (j.status === "cancelled") statusClass = "status-cancelled";
                 
                 return `
-                    <div class="card">
+                    <div class="card" onclick="viewLogs('${id}')">
                         <b>Job ID:</b> ${id}<br>
                         <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
                         <b>Progress:</b> ${j.completed}/${j.total}
@@ -607,7 +635,8 @@ def dashboard():
                         </div>
 
                         ${j.status === "running" ? `
-                            <button onclick="cancelJob('${id}')" style="background:#ef4444; margin-top:10px;">
+                            <button onclick="event.stopPropagation(); cancelJob('${id}')" 
+                            style="background:#ef4444; margin-top:10px;">
                                 Cancel Job
                             </button>
                         ` : ""}
@@ -622,7 +651,25 @@ def dashboard():
         fetchData();
 
         </script>
+        <!-- LOG PANEL -->
+        <div id="logPanel" style="
+            position: fixed;
+            right: 0;
+            top: 0;
+            width: 400px;
+            height: 100%;
+            background: #020617;
+            padding: 15px;
+            overflow-y: auto;
+            display: none;
+            border-left: 2px solid #38bdf8;
+        ">
 
+            <h2>📄 Job Logs</h2>
+            <button onclick="closeLogs()">Close</button>
+
+            <div id="logContent" style="margin-top: 10px;"></div>
+        </div>
     </body>
     </html>
     """
