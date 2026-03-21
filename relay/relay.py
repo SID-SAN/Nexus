@@ -498,33 +498,58 @@ def dashboard():
 
         <script>
 
+        let logInterval = null;
+        let currentJobId = null;
+
         async function viewLogs(job_id) {
 
             document.getElementById("logPanel").style.display = "block";
 
-            const res = await fetch(`/job_logs/${job_id}`);
-            const data = await res.json();
+            currentJobId = job_id;
 
-            let html = "";
-
-            for (let chunk in data.logs) {
-
-                html += `
-                    <div style="margin-bottom:10px; padding:10px; background:#1e293b; border-radius:8px;">
-                        <b>Chunk ${chunk}</b><br>
-                        <pre>${data.logs[chunk] || "No logs"}</pre>
-                        <pre style="color:red;">${data.errors[chunk] || ""}</pre>
-                    </div>
-                `;
+            // clear previous loop if any
+            if (logInterval) {
+                clearInterval(logInterval);
             }
 
-            document.getElementById("logContent").innerHTML = html;
+            async function fetchLogs() {
+
+                const res = await fetch(`/job_logs/${job_id}`);
+                const data = await res.json();
+
+                let html = "";
+
+                for (let chunk in data.logs) {
+
+                    html += `
+                        <div style="margin-bottom:10px; padding:10px; background:#1e293b; border-radius:8px;">
+                            <b>Chunk ${chunk}</b><br>
+                            <pre>${data.logs[chunk] || "No logs"}</pre>
+                            <pre style="color:red;">${data.errors[chunk] || ""}</pre>
+                        </div>
+                    `;
+                }
+
+                document.getElementById("logContent").innerHTML = html;
+            }
+
+            // run immediately
+            fetchLogs();
+
+            // 🔥 live update every 2 sec
+            logInterval = setInterval(fetchLogs, 2000);
         }
 
 
         function closeLogs() {
+
             document.getElementById("logPanel").style.display = "none";
-        }        
+
+            if (logInterval) {
+                clearInterval(logInterval);
+                logInterval = null;
+            }
+        }       
 
         async function submitJob() {
 
