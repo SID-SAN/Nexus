@@ -53,7 +53,7 @@ def apply_reducer(results, reducer):
 
     if reducer == "sum":
         values = [v for v in values if isinstance(v, (int, float))]
-        return sum(values)
+        return sum(values) if values else None
 
     if reducer == "avg":
         values = [v for v in values if isinstance(v, (int, float))]
@@ -244,15 +244,19 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 
                 raw_result = message["payload"]["result"]
 
-                try:
-                    parsed_result = int(raw_result)
-                except:
-                    try:
-                        parsed_result = float(raw_result)
-                    except:
-                        parsed_result = raw_result  # fallback
+                parsed_result = None
 
-                job["results"][str(chunk)] = parsed_result                
+                if raw_result is not None:
+                    try:
+                        parsed_result = int(raw_result)
+                    except:
+                        try:
+                            parsed_result = float(raw_result)
+                        except:
+                            parsed_result = None  # ignore invalid
+
+                job["results"][str(chunk)] = parsed_result
+
                 job["logs"][str(chunk)] = message["payload"].get("logs", "")
                 job["errors"][str(chunk)] = message["payload"].get("error", "")
                 job["completed"] += 1
