@@ -45,17 +45,19 @@ async def heartbeat_loop():
 
 def apply_reducer(results, reducer):
 
-    # remove None results
-    values = [v for v in results.values() if v is not None]
+    values = list(results.values())
+    values = [v for v in values if v is not None]
 
     if not values:
         return None
 
     if reducer == "sum":
+        values = [v for v in values if isinstance(v, (int, float))]
         return sum(values)
 
     if reducer == "avg":
-        return sum(values) / len(values)
+        values = [v for v in values if isinstance(v, (int, float))]
+        return sum(values) / len(values) if values else None
 
     if reducer == "max":
         return max(values)
@@ -66,8 +68,7 @@ def apply_reducer(results, reducer):
     if reducer == "list":
         return values
 
-    return values
-
+    return None
 
 # -----------------------------
 # Basic endpoints
@@ -552,8 +553,8 @@ def dashboard():
             // run immediately
             fetchLogs();
 
-            // 🔥 live update every 2 sec
-            logInterval = setInterval(fetchLogs, 2000);
+            // 🔥 live update every 1 sec
+            logInterval = setInterval(fetchLogs, 1000);
         }
 
 
