@@ -24,7 +24,8 @@ connected_nodes = {}
 node_resources = {}
 
 # v4 job queue
-jobs = {}
+from relay.job_persistence import load_jobs, save_jobs
+jobs = load_jobs()
 
 
 async def heartbeat_loop():
@@ -146,6 +147,7 @@ async def submit_job(
         "status": "running",
         "reducer": reducer
     }
+    save_jobs(jobs)
 
     return {
         "job_id": job_id,
@@ -230,6 +232,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 
                 # 🚫 ignore cancelled jobs
                 if job["status"] == "cancelled":
+                    save_jobs(jobs)
                     return
 
                 chunk = message["payload"]["chunk"]
@@ -238,10 +241,11 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if chunk in job["results"]:
                     return
                 
-                job["results"][chunk] = message["payload"]["result"]
-                job["logs"][chunk] = message["payload"].get("logs", "")
-                job["errors"][chunk] = message["payload"].get("error", "")
+                job["results"][str(chunk)] = message["payload"]["result"]
+                job["logs"][str(chunk)] = message["payload"].get("logs", "")
+                job["errors"][str(chunk)] = message["payload"].get("error", "")
                 job["completed"] += 1
+                save_jobs(jobs)
 
                 # mark chunk complete
                 job["status_map"][chunk] = "completed"
@@ -253,6 +257,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 # mark job completed if all done
                 elif job["completed"] == job["chunks"]:
                     job["status"] = "completed"
+                    save_jobs(jobs)
+
             # -----------------------------
             # Old relay routing (v3 compatibility)
             # -----------------------------
@@ -349,8 +355,10 @@ async def monitor_jobs():
 
         await asyncio.sleep(5)
 
-        if job["status"] != "running":
-            continue
+        for job_id, job in jobs.items():
+
+            if job["status"] != "running":
+                continue
 
         for job_id, job in jobs.items():
 
