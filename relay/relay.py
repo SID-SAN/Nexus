@@ -198,8 +198,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if job["queue"]:
 
                         chunk = job["queue"].pop(0)
-                        job["status_map"][chunk] = "running"
-                        job["assigned_at"][chunk] = time.time()
+                        job["status_map"][str(chunk)] = "running"
+                        job["assigned_at"][str(chunk)] = time.time()
                         job["retries"].setdefault(chunk, 0)
 
                         response = {
@@ -248,7 +248,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 save_jobs(jobs)
 
                 # mark chunk complete
-                job["status_map"][chunk] = "completed"
+                job["status_map"][str(chunk)] = "completed"
 
                 #  ADD THIS HERE
                 if any(status == "failed" for status in job["status_map"].values()):
@@ -381,15 +381,15 @@ async def monitor_jobs():
                         print(f"[Retry] chunk {chunk} for job {job_id}")
 
                         job["queue"].append(chunk)
-                        job["status_map"][chunk] = "pending"
-                        job["retries"][chunk] += 1
+                        job["status_map"][str(chunk)] = "pending"
+                        job["retries"][str(chunk)] += 1
 
                     else:
 
                         print(f"[Failed] chunk {chunk} exceeded retries")
 
-                        job["status_map"][chunk] = "failed"
-                        job["errors"][chunk] = "Max retries exceeded"
+                        job["status_map"][str(chunk)] = "failed"
+                        job["errors"][str(chunk)] = "Max retries exceeded"
 
 
 @app.on_event("startup")
