@@ -617,7 +617,6 @@ def dashboard():
 
                     const result = await fetch(`/job_result/${job_id}`).then(r => r.json());
 
-                    alert("✅ Job Completed!\\nResult: " + JSON.stringify(result.result));
                 }
 
                 if (status.status === "failed") {
@@ -667,6 +666,12 @@ def dashboard():
                             <div class="progress-fill" style="width:${percent}%"></div>
                         </div>
 
+                        ${j.status === "completed" ? `
+                            <div style="margin-top:10px; color:#22c55e;">
+                                <b>Result:</b> ${j.result}
+                            </div>
+                        ` : ""}
+
                         ${j.status === "running" ? `
                             <button onclick="event.stopPropagation(); cancelJob('${id}')" 
                             style="background:#ef4444; margin-top:10px;">
@@ -715,10 +720,17 @@ def all_jobs():
     output = {}
 
     for job_id, job in jobs.items():
+
+        result = None
+
+        if job["status"] == "completed":
+            result = apply_reducer(job["results"], job["reducer"])
+
         output[job_id] = {
             "status": job["status"],
             "completed": job["completed"],
-            "total": job["chunks"]
+            "total": job["chunks"],
+            "result": result
         }
 
     return output
