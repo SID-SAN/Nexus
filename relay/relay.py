@@ -241,7 +241,17 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if chunk in job["results"]:
                     return
                 
-                job["results"][str(chunk)] = message["payload"]["result"]
+                raw_result = message["payload"]["result"]
+
+                try:
+                    parsed_result = int(raw_result)
+                except:
+                    try:
+                        parsed_result = float(raw_result)
+                    except:
+                        parsed_result = raw_result  # fallback
+
+                job["results"][str(chunk)] = parsed_result                
                 job["logs"][str(chunk)] = message["payload"].get("logs", "")
                 job["errors"][str(chunk)] = message["payload"].get("error", "")
                 job["completed"] += 1
@@ -359,8 +369,6 @@ async def monitor_jobs():
 
             if job["status"] != "running":
                 continue
-
-        for job_id, job in jobs.items():
 
             for chunk, status in list(job["status_map"].items()):
 
