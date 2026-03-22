@@ -1,426 +1,79 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi.responses import FileResponse, HTMLResponse
 import json
 import os
 import uuid
-from fastapi.responses import FileResponse
-from fastapi import UploadFile, File
-from fastapi import Form
 import asyncio
 import time
 
+from relay.job_persistence import load_jobs, save_jobs
+
 app = FastAPI()
-@app.on_event("startup")
-async def start_heartbeat():
-    asyncio.create_task(heartbeat_loop())
 
 # -----------------------------
 # Storage
 # -----------------------------
-
 JOB_DIR = "jobs"
 os.makedirs(JOB_DIR, exist_ok=True)
 
 connected_nodes = {}
 node_resources = {}
+node_last_seen = {}
 
-# v4 job queue
-from relay.job_persistence import load_jobs, save_jobs
 jobs = load_jobs()
 
+# -----------------------------
+# CONFIG
+# -----------------------------
+MAX_RETRIES = 2
+CHUNK_TIMEOUT = 60
+NODE_TIMEOUT = 60
 
+
+# -----------------------------
+# SAFE SEND
+# -----------------------------
+async def safe_send(ws, message, node_id=None):
+    try:
+        if ws.client_state.name == "CONNECTED":
+            await ws.send_text(json.dumps(message))
+    except Exception as e:
+        if node_id:
+            print(f"[Relay] Removing dead node {node_id}: {e}")
+            connected_nodes.pop(node_id, None)
+            node_resources.pop(node_id, None)
+            node_last_seen.pop(node_id, None)
+
+
+# -----------------------------
+# HEARTBEAT + CLEANUP
+# -----------------------------
 async def heartbeat_loop():
-
     while True:
-
         await asyncio.sleep(20)
+
+        now = time.time()
 
         for node_id, ws in list(connected_nodes.items()):
 
-            try:
-                if ws.client_state.name == "CONNECTED":
-                    await ws.send_text(json.dumps({"type": "heartbeat"}))
-            except:
+            last_seen = node_last_seen.get(node_id, now)
+
+            # 🔥 remove stale nodes
+            if now - last_seen > NODE_TIMEOUT:
+                print(f"[Relay] Removing stale node {node_id}")
                 connected_nodes.pop(node_id, None)
-
-
-def apply_reducer(results, reducer):
-
-    values = list(results.values())
-    values = [v for v in values if v is not None]
-
-    if not values:
-        return None
-
-    if reducer == "sum":
-        values = [v for v in values if isinstance(v, (int, float))]
-        return sum(values) if values else None
-
-    if reducer == "avg":
-        values = [v for v in values if isinstance(v, (int, float))]
-        return sum(values) / len(values) if values else None
-
-    if reducer == "max":
-        return max(values)
-
-    if reducer == "min":
-        return min(values)
-
-    if reducer == "list":
-        return values
-
-    return None
-
-
-def get_node_capacity(node_id):
-    res = node_resources.get(node_id, {})
-
-    cpu = res.get("cpu", 100)
-    ram = res.get("ram", 100)
-
-    # higher is better
-    capacity = max(1, int((100 - cpu) * 0.7 + (100 - ram) * 0.3))
-
-    return capacity
-
-
-# -----------------------------
-# Basic endpoints
-# -----------------------------
-
-@app.get("/")
-def root():
-    return {"message": "Relay server running"}
-
-
-@app.get("/health")
-def health():
-    return {
-        "status": "relay_alive",
-        "connected_nodes": list(connected_nodes.keys())
-    }
-
-
-@app.get("/nodes")
-def get_nodes():
-    return {"nodes": list(connected_nodes.keys())}
-
-
-@app.get("/resources")
-def get_resources():
-    return node_resources
-
-
-@app.get("/cluster_status")
-def cluster_status():
-    return {
-        "connected_nodes": list(connected_nodes.keys()),
-        "resources": node_resources,
-        "active_jobs": list(jobs.keys())
-    }
-
-
-
-@app.get("/jobs/{job_id}")
-def download_job(job_id: str):
-
-    path = f"{JOB_DIR}/{job_id}.zip"
-
-    if not os.path.exists(path):
-        return {"error": "job not found"}
-
-    return FileResponse(path)
-
-
-# -----------------------------
-# Create distributed job
-# -----------------------------
-
-@app.post("/submit_job")
-async def submit_job(
-    file: UploadFile = File(...),
-    chunks: int = Form(None),
-    reducer: str = Form("sum")
-):
-    if not chunks or chunks <= 0:
-        chunks = auto_calculate_chunks()
-
-    job_id = str(uuid.uuid4())
-
-    path = os.path.join(JOB_DIR, f"{job_id}.zip")
-
-    with open(path, "wb") as f:
-        f.write(await file.read())
-
-    jobs[job_id] = {
-        "chunks": chunks,
-        "queue": list(range(1, chunks + 1)),
-        "results": {},
-        "logs": {},
-        "errors": {},
-        "status_map": {},
-        "assigned_at": {},
-        "retries": {},    
-        "completed": 0,
-        "status": "running",
-        "reducer": reducer
-    }
-    save_jobs(jobs)
-
-    return {
-        "job_id": job_id,
-        "chunks": chunks,
-        "status": "job_created"
-    }
-
-# -----------------------------
-# WebSocket relay
-# -----------------------------
-
-@app.websocket("/ws/{node_id}")
-async def websocket_endpoint(websocket: WebSocket, node_id: str):
-
-    await websocket.accept()
-
-    connected_nodes[node_id] = websocket
-    print(f"Node connected: {node_id}")
-
-    try:
-        while True:
-
-            data = await websocket.receive_text()
-            message = json.loads(data)
-
-            msg_type = message.get("type")
-
-            # -----------------------------
-            # Heartbeat ACK
-            # -----------------------------
-            if msg_type == "heartbeat_ack":
+                node_resources.pop(node_id, None)
+                node_last_seen.pop(node_id, None)
                 continue
 
-            # -----------------------------
-            # Resource updates
-            # -----------------------------
-            if msg_type == "resource_update":
-                node_resources[node_id] = message["payload"]
-                continue
-
-            # -----------------------------
-            # Node requests chunk
-            # -----------------------------
-            elif msg_type == "request_chunk":
-
-                node_capacity = get_node_capacity(node_id)
-
-                # decide batch size
-                batch_size = max(1, node_capacity // 20)
-
-                # -----------------------------
-                # Select best job (fair scheduling)
-                # -----------------------------
-                best_job = None
-                best_score = float("inf")
-
-                for job_id, job in jobs.items():
-
-                    # skip inactive jobs
-                    if job["status"] != "running" or not job["queue"]:
-                        continue
-
-                    progress = job["completed"] / job["chunks"]
-
-                    if progress < best_score:
-                        best_score = progress
-                        best_job = (job_id, job)
-
-                if not best_job:
-                    return
-
-                job_id, job = best_job
-
-                # -----------------------------
-                # Assign batch
-                # -----------------------------
-                assigned_chunks = []
-
-                for _ in range(batch_size):
-
-                    if not job["queue"]:
-                        break
-
-                    chunk = job["queue"].pop(0)
-
-                    job["status_map"][str(chunk)] = "running"
-                    job["assigned_at"][str(chunk)] = time.time()
-                    job["retries"].setdefault(str(chunk), 0)
-
-                    assigned_chunks.append(chunk)
-
-                if assigned_chunks:
-
-                    response = {
-                        "type": "assign_chunk_batch",
-                        "target": node_id,
-                        "payload": {
-                            "job_id": job_id,
-                            "chunks": assigned_chunks,
-                            "total_chunks": job["chunks"]
-                        }
-                    }
-
-                    await websocket.send_text(json.dumps(response))
-
-                    print(f"[Adaptive] Assigned {len(assigned_chunks)} chunks → {node_id}")
-            # -----------------------------
-            # Node submits result
-            # -----------------------------
-            elif msg_type == "submit_result":
-                job_id = message["payload"]["job_id"]
-                chunk = message["payload"]["chunk"]
-                result = message["payload"]["result"]
-                
-                job = jobs.get(job_id)
-
-                if not job:
-                    return
-                
-                # 🚫 ignore cancelled jobs
-                if job["status"] == "cancelled":
-                    save_jobs(jobs)
-                    return
-
-                chunk = message["payload"]["chunk"]
-
-                # 🚫 ignore duplicates
-                if chunk in job["results"]:
-                    return
-                
-                raw_result = message["payload"]["result"]
-
-                parsed_result = None
-
-                if raw_result is not None:
-                    try:
-                        parsed_result = int(raw_result)
-                    except:
-                        try:
-                            parsed_result = float(raw_result)
-                        except:
-                            parsed_result = None  # ignore invalid
-
-                job["results"][str(chunk)] = parsed_result
-
-                job["logs"][str(chunk)] = message["payload"].get("logs", "")
-                job["errors"][str(chunk)] = message["payload"].get("error", "")
-                job["completed"] += 1
-                save_jobs(jobs)
-
-                # mark chunk complete
-                job["status_map"][str(chunk)] = "completed"
-
-                #  ADD THIS HERE
-                if any(status == "failed" for status in job["status_map"].values()):
-                    job["status"] = "failed"
-
-                # mark job completed if all done
-                elif job["completed"] == job["chunks"]:
-                    job["status"] = "completed"
-                    save_jobs(jobs)
-
-            # -----------------------------
-            # Old relay routing (v3 compatibility)
-            # -----------------------------
-            else:
-
-                target = message.get("target")
-
-                if target in connected_nodes:
-
-                    target_socket = connected_nodes[target]
-
-                    await target_socket.send_text(json.dumps(message))
-
-                    print(f"Routed message {msg_type} from {node_id} → {target}")
-
-                else:
-
-                    print(f"Target {target} not connected")
-
-    except WebSocketDisconnect:
-
-        print(f"Node disconnected: {node_id}")
-
-        connected_nodes.pop(node_id, None)
-        node_resources.pop(node_id, None)
+            await safe_send(ws, {"type": "heartbeat"}, node_id)
 
 
-@app.get("/job_status/{job_id}")
-def job_status(job_id: str):
-
-    job = jobs.get(job_id)
-
-    if not job:
-        return {"error": "job not found"}
-    
-    return {
-        "job_id": job_id,
-        "status": job["status"],
-        "completed": job["completed"],
-        "total_chunks": job["chunks"],
-        "chunk_status": job["status_map"]
-    }
-
-@app.get("/job_result/{job_id}")
-def job_result(job_id: str):
-
-    job = jobs.get(job_id)
-
-    if not job:
-        return {"error": "job not found"}
-
-    if job["status"] == "failed":
-        return {
-            "job_id": job_id,
-            "status": "failed",
-            "errors": job["errors"]
-        }
-
-    if job["status"] != "completed":
-        return {"status": "job still running"}
-
-    final_result = apply_reducer(job["results"], job["reducer"])
-
-    return {
-        "job_id": job_id,
-        "result": final_result
-    }
-
-@app.get("/job_logs/{job_id}")
-def job_logs(job_id: str):
-
-    job = jobs.get(job_id)
-
-    if not job:
-        return {"error": "job not found"}
-
-    return {
-        "job_id": job_id,
-        "logs": job["logs"],
-        "errors": job["errors"]
-    }
-
-
-import asyncio
-import time
-
-MAX_RETRIES = 2
-CHUNK_TIMEOUT = 60  # seconds
-
-
+# -----------------------------
+# JOB MONITOR (RETRIES)
+# -----------------------------
 async def monitor_jobs():
-
     while True:
-
         await asyncio.sleep(5)
 
         for job_id, job in jobs.items():
@@ -443,25 +96,295 @@ async def monitor_jobs():
                     retries = job["retries"].get(chunk, 0)
 
                     if retries < MAX_RETRIES:
-
                         print(f"[Retry] chunk {chunk} for job {job_id}")
 
-                        job["queue"].append(chunk)
-                        job["status_map"][str(chunk)] = "pending"
-                        job["retries"][str(chunk)] += 1
+                        job["queue"].append(int(chunk))
+                        job["status_map"][chunk] = "pending"
+                        job["retries"][chunk] += 1
 
                     else:
+                        print(f"[Failed] chunk {chunk}")
 
-                        print(f"[Failed] chunk {chunk} exceeded retries")
+                        job["status_map"][chunk] = "failed"
+                        job["errors"][chunk] = "Max retries exceeded"
 
-                        job["status_map"][str(chunk)] = "failed"
-                        job["errors"][str(chunk)] = "Max retries exceeded"
+        save_jobs(jobs)
 
 
+# -----------------------------
+# HELPERS
+# -----------------------------
+def get_node_capacity(node_id):
+    res = node_resources.get(node_id, {})
+    cpu = res.get("cpu", 100)
+    ram = res.get("ram", 100)
+
+    return max(1, int((100 - cpu) * 0.7 + (100 - ram) * 0.3))
+
+
+def auto_calculate_chunks():
+    if not node_resources:
+        return 5
+
+    total = sum(get_node_capacity(n) for n in node_resources)
+    chunks = total // 10
+
+    return min(max(chunks, 5), 100)
+
+
+def apply_reducer(results, reducer):
+    values = [v for v in results.values() if v is not None]
+
+    if not values:
+        return None
+
+    if reducer == "sum":
+        return sum(v for v in values if isinstance(v, (int, float)))
+    if reducer == "avg":
+        nums = [v for v in values if isinstance(v, (int, float))]
+        return sum(nums) / len(nums) if nums else None
+    if reducer == "max":
+        return max(values)
+    if reducer == "min":
+        return min(values)
+    if reducer == "list":
+        return values
+
+    return None
+
+
+# -----------------------------
+# STARTUP
+# -----------------------------
 @app.on_event("startup")
-async def start_monitor():
+async def startup():
+    asyncio.create_task(heartbeat_loop())
     asyncio.create_task(monitor_jobs())
 
+
+# -----------------------------
+# BASIC API
+# -----------------------------
+@app.get("/")
+def root():
+    return {"message": "Relay running"}
+
+
+@app.get("/nodes")
+def get_nodes():
+    return {"nodes": list(connected_nodes.keys())}
+
+
+@app.get("/resources")
+def get_resources():
+    return node_resources
+
+
+@app.get("/cluster_status")
+def cluster_status():
+    return {
+        "connected_nodes": list(connected_nodes.keys()),
+        "resources": node_resources,
+        "active_jobs": list(jobs.keys())
+    }
+
+
+@app.get("/jobs/{job_id}")
+def download_job(job_id: str):
+    path = f"{JOB_DIR}/{job_id}.zip"
+    return FileResponse(path) if os.path.exists(path) else {"error": "not found"}
+
+
+# -----------------------------
+# JOB SUBMISSION
+# -----------------------------
+@app.post("/submit_job")
+async def submit_job(file: UploadFile = File(...), chunks: int = Form(None), reducer: str = Form("sum")):
+
+    if not chunks or chunks <= 0:
+        chunks = auto_calculate_chunks()
+
+    job_id = str(uuid.uuid4())
+
+    path = os.path.join(JOB_DIR, f"{job_id}.zip")
+    with open(path, "wb") as f:
+        f.write(await file.read())
+
+    jobs[job_id] = {
+        "chunks": chunks,
+        "queue": list(range(1, chunks + 1)),
+        "results": {},
+        "logs": {},
+        "errors": {},
+        "status_map": {},
+        "assigned_at": {},
+        "retries": {},
+        "completed": 0,
+        "status": "running",
+        "reducer": reducer
+    }
+
+    save_jobs(jobs)
+
+    return {"job_id": job_id, "chunks": chunks}
+
+
+# -----------------------------
+# WEBSOCKET
+# -----------------------------
+@app.websocket("/ws/{node_id}")
+async def websocket_endpoint(websocket: WebSocket, node_id: str):
+
+    await websocket.accept()
+
+    connected_nodes[node_id] = websocket
+    node_last_seen[node_id] = time.time()
+
+    print(f"Node connected: {node_id}")
+
+    try:
+        while True:
+
+            data = await websocket.receive_text()
+            message = json.loads(data)
+
+            node_last_seen[node_id] = time.time()
+
+            msg_type = message.get("type")
+
+            if msg_type == "resource_update":
+                node_resources[node_id] = message["payload"]
+
+            elif msg_type == "request_chunk":
+
+                node_capacity = get_node_capacity(node_id)
+                batch_size = max(1, node_capacity // 20)
+
+                # pick job
+                best_job = None
+                best_score = float("inf")
+
+                for jid, job in jobs.items():
+                    if job["status"] != "running" or not job["queue"]:
+                        continue
+
+                    progress = job["completed"] / job["chunks"]
+
+                    if progress < best_score:
+                        best_score = progress
+                        best_job = (jid, job)
+
+                if not best_job:
+                    continue   # 🔥 FIX (NOT return)
+
+                jid, job = best_job
+
+                assigned = []
+
+                for _ in range(batch_size):
+                    if not job["queue"]:
+                        break
+
+                    chunk = job["queue"].pop(0)
+
+                    job["status_map"][str(chunk)] = "running"
+                    job["assigned_at"][str(chunk)] = time.time()
+                    job["retries"].setdefault(str(chunk), 0)
+
+                    assigned.append(chunk)
+
+                if assigned:
+                    await safe_send(websocket, {
+                        "type": "assign_chunk_batch",
+                        "payload": {
+                            "job_id": jid,
+                            "chunks": assigned,
+                            "total_chunks": job["chunks"]
+                        }
+                    }, node_id)
+
+            elif msg_type == "submit_result":
+
+                payload = message["payload"]
+                job_id = payload["job_id"]
+                chunk = str(payload["chunk"])
+
+                job = jobs.get(job_id)
+                if not job or job["status"] == "cancelled":
+                    continue
+
+                if chunk in job["results"]:
+                    continue
+
+                try:
+                    val = int(payload["result"])
+                except:
+                    try:
+                        val = float(payload["result"])
+                    except:
+                        val = None
+
+                job["results"][chunk] = val
+                job["logs"][chunk] = payload.get("logs", "")
+                job["errors"][chunk] = payload.get("error", "")
+                job["status_map"][chunk] = "completed"
+                job["completed"] += 1
+
+                if job["completed"] == job["chunks"]:
+                    job["status"] = "completed"
+
+                save_jobs(jobs)
+
+    except WebSocketDisconnect:
+        print(f"Node disconnected: {node_id}")
+        connected_nodes.pop(node_id, None)
+        node_resources.pop(node_id, None)
+        node_last_seen.pop(node_id, None)
+
+
+# -----------------------------
+# JOB APIs
+# -----------------------------
+@app.get("/job_status/{job_id}")
+def job_status(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        return {"error": "not found"}
+
+    return {
+        "status": job["status"],
+        "completed": job["completed"],
+        "total": job["chunks"]
+    }
+
+
+@app.get("/job_result/{job_id}")
+def job_result(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job["status"] != "completed":
+        return {"status": "running"}
+
+    return {"result": apply_reducer(job["results"], job["reducer"])}
+
+
+@app.get("/all_jobs")
+def all_jobs():
+    out = {}
+    for jid, job in jobs.items():
+        out[jid] = {
+            "status": job["status"],
+            "completed": job["completed"],
+            "total": job["chunks"],
+            "result": apply_reducer(job["results"], job["reducer"]) if job["status"] == "completed" else None
+        }
+    return out
+
+
+@app.post("/cancel_job/{job_id}")
+def cancel_job(job_id: str):
+    if job_id in jobs:
+        jobs[job_id]["status"] = "cancelled"
+    return {"status": "cancelled"}
 
 
 from fastapi.responses import HTMLResponse
@@ -786,75 +709,3 @@ def dashboard():
     </html>
     """
 
-
-
-@app.get("/all_jobs")
-def all_jobs():
-
-    output = {}
-
-    for job_id, job in jobs.items():
-
-        result = None
-
-        if job["status"] == "completed":
-            result = apply_reducer(job["results"], job["reducer"])
-
-        output[job_id] = {
-            "status": job["status"],
-            "completed": job["completed"],
-            "total": job["chunks"],
-            "result": result
-        }
-
-    return output
-
-
-
-@app.post("/cancel_job/{job_id}")
-def cancel_job(job_id: str):
-
-    job = jobs.get(job_id)
-
-    if not job:
-        return {"error": "job not found"}
-
-    job["status"] = "cancelled"
-
-    return {
-        "job_id": job_id,
-        "status": "cancelled"
-    }
-
-
-
-@app.get("/job_status_simple/{job_id}")
-def job_status_simple(job_id: str):
-
-    job = jobs.get(job_id)
-
-    if not job:
-        return {"status": "not_found"}
-
-    return {"status": job["status"]}
-
-
-def auto_calculate_chunks():
-
-    if not node_resources:
-        return 5  # fallback
-
-    total_capacity = 0
-
-    for node, res in node_resources.items():
-        cpu = res.get("cpu", 100)
-        ram = res.get("ram", 100)
-
-        capacity = max(1, int((100 - cpu) * 0.7 + (100 - ram) * 0.3))
-        total_capacity += capacity
-
-    # normalize
-    chunks = total_capacity // 10
-
-    # safety bounds
-    return min(max(chunks, 5), 100)
