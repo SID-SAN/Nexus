@@ -387,6 +387,23 @@ def cancel_job(job_id: str):
     return {"status": "cancelled"}
 
 
+@app.get("/job_logs/{job_id}")
+def job_logs(job_id: str):
+
+    job = jobs.get(job_id)
+
+    if not job:
+        return {"error": "job not found"}
+
+    return {
+        "job_id": job_id,
+        "logs": job.get("logs", {}),
+        "errors": job.get("errors", {})
+    }
+
+
+
+
 from fastapi.responses import HTMLResponse
 
 @app.get("/dashboard", response_class=HTMLResponse)

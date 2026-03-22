@@ -29,11 +29,22 @@ async def execute_chunk_batch(job_id, chunks, total_chunks):
     try:
         # check cancellation
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{RELAY_HTTP_URL}/job_status_simple/{job_id}") as resp:
-                status_data = await resp.json()
+            async with session.get(f"{RELAY_HTTP_URL}/job_status/{job_id}") as resp:
+                try:
+                    status_data = await resp.json()
+                except Exception:
+                    print("[V4] Failed to parse job status response")
+                    return
 
-                if status_data["status"] == "cancelled":
-                    print("[V4] Job cancelled, skipping batch")
+                if resp.status != 200:
+                    print(f"[V4] Invalid response: {await resp.text()}")
+                    return
+
+                status_data = await resp.json()
+                status = status_data.get("status")
+
+                if not status:
+                    print(f"[V4] Invalid response: {status_data}")
                     return
 
         # download job once
