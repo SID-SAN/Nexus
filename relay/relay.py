@@ -70,6 +70,19 @@ def apply_reducer(results, reducer):
 
     return None
 
+
+def get_node_capacity(node_id):
+    res = node_resources.get(node_id, {})
+
+    cpu = res.get("cpu", 100)
+    ram = res.get("ram", 100)
+
+    # higher is better
+    capacity = max(1, int((100 - cpu) * 0.7 + (100 - ram) * 0.3))
+
+    return capacity
+
+
 # -----------------------------
 # Basic endpoints
 # -----------------------------
@@ -125,9 +138,12 @@ def download_job(job_id: str):
 @app.post("/submit_job")
 async def submit_job(
     file: UploadFile = File(...),
-    chunks: int = Form(...),
+    chunks: int = Form(None),
     reducer: str = Form("sum")
 ):
+    if not chunks or chunks <= 0:
+        chunks = auto_calculate_chunks()
+
     job_id = str(uuid.uuid4())
 
     path = os.path.join(JOB_DIR, f"{job_id}.zip")
@@ -194,30 +210,67 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
             # -----------------------------
             elif msg_type == "request_chunk":
 
+                node_capacity = get_node_capacity(node_id)
+
+                # decide batch size
+                batch_size = max(1, node_capacity // 20)
+
+                # -----------------------------
+                # Select best job (fair scheduling)
+                # -----------------------------
+                best_job = None
+                best_score = float("inf")
+
                 for job_id, job in jobs.items():
 
-                    if job["queue"]:
+                    # skip inactive jobs
+                    if job["status"] != "running" or not job["queue"]:
+                        continue
 
-                        chunk = job["queue"].pop(0)
-                        job["status_map"][str(chunk)] = "running"
-                        job["assigned_at"][str(chunk)] = time.time()
-                        job["retries"].setdefault(chunk, 0)
+                    progress = job["completed"] / job["chunks"]
 
-                        response = {
-                            "type": "assign_chunk",
-                            "target": node_id,
-                            "payload": {
-                                "job_id": job_id,
-                                "chunk": chunk,
-                                "total_chunks": job["chunks"]
-                            }
-                        }
+                    if progress < best_score:
+                        best_score = progress
+                        best_job = (job_id, job)
 
-                        await websocket.send_text(json.dumps(response))
+                if not best_job:
+                    return
 
-                        print(f"[Scheduler] Assigned chunk {chunk} → {node_id}")
+                job_id, job = best_job
 
+                # -----------------------------
+                # Assign batch
+                # -----------------------------
+                assigned_chunks = []
+
+                for _ in range(batch_size):
+
+                    if not job["queue"]:
                         break
+
+                    chunk = job["queue"].pop(0)
+
+                    job["status_map"][str(chunk)] = "running"
+                    job["assigned_at"][str(chunk)] = time.time()
+                    job["retries"].setdefault(str(chunk), 0)
+
+                    assigned_chunks.append(chunk)
+
+                if assigned_chunks:
+
+                    response = {
+                        "type": "assign_chunk_batch",
+                        "target": node_id,
+                        "payload": {
+                            "job_id": job_id,
+                            "chunks": assigned_chunks,
+                            "total_chunks": job["chunks"]
+                        }
+                    }
+
+                    await websocket.send_text(json.dumps(response))
+
+                    print(f"[Adaptive] Assigned {len(assigned_chunks)} chunks → {node_id}")
             # -----------------------------
             # Node submits result
             # -----------------------------
@@ -494,7 +547,7 @@ def dashboard():
         <div class="card">
             <input type="file" id="file"><br><br>
 
-            <input type="number" id="chunks" placeholder="Chunks" value="5"><br><br>
+            <input type="number" id="chunks" placeholder="Auto"><br><br>
 
             <select id="reducer">
                 <option value="sum">sum</option>
@@ -575,7 +628,11 @@ def dashboard():
         async function submitJob() {
 
             const file = document.getElementById("file").files[0];
-            const chunks = document.getElementById("chunks").value;
+
+            let chunks = document.getElementById("chunks").value;
+            if (!chunks) {
+                chunks = null;}        
+
             const reducer = document.getElementById("reducer").value;
 
             if (!file) {
@@ -585,7 +642,11 @@ def dashboard():
 
             const formData = new FormData();
             formData.append("file", file);
-            formData.append("chunks", chunks);
+
+            if (chunks !== null) {
+                formData.append("chunks", chunks);
+            }            
+
             formData.append("reducer", reducer);
 
             const res = await fetch('/submit_job', {
@@ -596,7 +657,7 @@ def dashboard():
             const data = await res.json();
 
             document.getElementById("submitStatus").innerText =
-                "Job submitted: " + data.job_id;
+                "Job submitted: " + data.job_id +  " | Chunks: " + data.chunks;
 
             trackJob(data.job_id);
         }
@@ -776,3 +837,24 @@ def job_status_simple(job_id: str):
         return {"status": "not_found"}
 
     return {"status": job["status"]}
+
+
+def auto_calculate_chunks():
+
+    if not node_resources:
+        return 5  # fallback
+
+    total_capacity = 0
+
+    for node, res in node_resources.items():
+        cpu = res.get("cpu", 100)
+        ram = res.get("ram", 100)
+
+        capacity = max(1, int((100 - cpu) * 0.7 + (100 - ram) * 0.3))
+        total_capacity += capacity
+
+    # normalize
+    chunks = total_capacity // 10
+
+    # safety bounds
+    return min(max(chunks, 5), 100)

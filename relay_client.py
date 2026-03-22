@@ -51,6 +51,7 @@ async def connect_to_relay():
                     # -----------------------------
                     # V4 distributed job execution
                     # -----------------------------
+                    
                     if msg_type == "assign_chunk":
 
                         payload = data["payload"]
@@ -113,6 +114,58 @@ async def connect_to_relay():
                             await websocket.send(json.dumps(response))
 
                             print(f"[V4] Execution crashed: {e}")
+
+
+                    elif msg_type == "assign_chunk_batch":
+
+                        payload = data["payload"]
+
+                        job_id = payload["job_id"]
+                        chunks = payload["chunks"]
+                        total_chunks = payload["total_chunks"]
+
+                        print(f"[V4] Batch assigned {len(chunks)} chunks for job {job_id}")
+
+                        try:
+
+                            # check cancellation once
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(f"{RELAY_HTTP_URL}/job_status_simple/{job_id}") as resp:
+                                    status_data = await resp.json()
+
+                                    if status_data["status"] == "cancelled":
+                                        print("[V4] Job cancelled, skipping batch")
+                                        continue
+
+                            # download once
+                            if job_id not in job_cache:
+                                job_cache[job_id] = download_job(job_id)
+
+                            job_path = job_cache[job_id]
+
+                            # execute each chunk
+                            for chunk in chunks:
+
+                                exec_output = execute_job(job_path, chunk, total_chunks)
+
+                                response = {
+                                    "type": "submit_result",
+                                    "source": NODE_ID,
+                                    "payload": {
+                                        "job_id": job_id,
+                                        "chunk": chunk,
+                                        "result": exec_output.get("result"),
+                                        "logs": exec_output.get("logs", ""),
+                                        "error": exec_output.get("error", "")
+                                    }
+                                }
+
+                                await websocket.send(json.dumps(response))
+
+                                print(f"[V4] Submitted chunk {chunk}")
+
+                        except Exception as e:
+                            print(f"[V4] Batch execution failed: {e}")
                     # -----------------------------
                     # V3 compatibility
                     # -----------------------------
