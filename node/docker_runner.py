@@ -27,8 +27,11 @@ def run_in_docker(job_path, chunk, total_chunks):
             timeout=60
         )
 
+        output = result.stdout.strip().split("\n")
+        last_line = output[-1] if output else ""
+
         return {
-            "result": result.stdout.strip(),
+            "result": last_line,
             "logs": result.stdout,
             "error": result.stderr
         }
