@@ -19,22 +19,54 @@ job_cache = {}
 send_queue = asyncio.Queue()
 work_loop_started = False
 
+MAX_CONCURRENT_CHUNKS = 2
+semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
+
 # -----------------------------
 # 🔥 BACKGROUND EXECUTION
 # -----------------------------
-async def execute_chunk_batch(job_id, chunks, total_chunks):
+
+async def run_single_chunk(job_id, chunk, total_chunks):
 
     global websocket_connection
+
+    async with semaphore:
+
+        print(f"[V4] Running chunk {chunk}")
+
+        exec_output = await asyncio.to_thread(
+            execute_job,
+            job_cache[job_id],
+            chunk,
+            total_chunks
+        )
+
+        response = {
+            "type": "submit_result",
+            "source": NODE_ID,
+            "payload": {
+                "job_id": job_id,
+                "chunk": chunk,
+                "result": exec_output.get("result"),
+                "logs": exec_output.get("logs", ""),
+                "error": exec_output.get("error", "")
+            }
+        }
+
+        if websocket_connection:
+            await send_queue.put(response)
+        else:
+            print("[V4] Skipping send (no connection)")
+
+        print(f"[V4] Submitted chunk {chunk}")
+
+
+async def execute_chunk_batch(job_id, chunks, total_chunks):
 
     try:
         # check cancellation
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{RELAY_HTTP_URL}/job_status/{job_id}") as resp:
-                try:
-                    status_data = await resp.json()
-                except Exception:
-                    print("[V4] Failed to parse job status response")
-                    return
 
                 if resp.status != 200:
                     print(f"[V4] Invalid response: {await resp.text()}")
@@ -47,6 +79,10 @@ async def execute_chunk_batch(job_id, chunks, total_chunks):
                     print(f"[V4] Invalid response: {status_data}")
                     return
 
+                if status == "cancelled":
+                    print("[V4] Job cancelled, skipping batch")
+                    return
+
         # download job once
         if job_id not in job_cache:
             if os.path.exists(f"jobs/{job_id}"):
@@ -54,41 +90,19 @@ async def execute_chunk_batch(job_id, chunks, total_chunks):
             else:
                 job_cache[job_id] = download_job(job_id)
 
-        job_path = job_cache[job_id]
+        # 🔥 PARALLEL EXECUTION
+        tasks = []
 
         for chunk in chunks:
-
-            # run blocking docker safely
-            exec_output = await asyncio.to_thread(
-                execute_job,
-                job_path,
-                chunk,
-                total_chunks
+            task = asyncio.create_task(
+                run_single_chunk(job_id, chunk, total_chunks)
             )
+            tasks.append(task)
 
-            response = {
-                "type": "submit_result",
-                "source": NODE_ID,
-                "payload": {
-                    "job_id": job_id,
-                    "chunk": chunk,
-                    "result": exec_output.get("result"),
-                    "logs": exec_output.get("logs", ""),
-                    "error": exec_output.get("error", "")
-                }
-            }
-
-            # only send if connection alive
-            if websocket_connection:
-                await send_queue.put(response)
-            else:
-                print("[V4] Skipping send (no connection)")
-
-            print(f"[V4] Submitted chunk {chunk}")
+        await asyncio.gather(*tasks)
 
     except Exception as e:
         print(f"[V4] Batch execution failed: {e}")
-
 
 # -----------------------------
 # 🔁 SINGLE SENDER LOOP
