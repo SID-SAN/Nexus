@@ -1,108 +1,186 @@
-# Nexus
+# Nexus v4.0.0
 
-### Distributed Computing Framework
+### Intelligent Distributed Computing Framework
 
-Nexus is a lightweight distributed computing framework that allows multiple machines to collaborate on computational tasks over the internet.
+Nexus is a lightweight distributed computing framework that enables multiple machines (nodes) to collaboratively execute computational tasks in parallel using a Map-Reduce inspired model.
 
-Nodes connect to a central relay server and distribute workloads across available machines based on real-time resource availability.
-
----
-
-# Version
-
-Current Release: **v3.1.0**
+With v4.0.0, Nexus evolves from a basic distributed executor into a **self-optimizing, resource-aware compute system**.
 
 ---
 
-# Overview
+# Key Highlights (v4.0.0)
 
-Nexus enables a group of computers to act as a small compute cluster.
+* **Adaptive Chunk Execution**
 
-Instead of running heavy computations on one machine, Nexus splits the workload into smaller chunks and distributes them across connected nodes.
+  * Nodes dynamically process multiple chunks based on available resources
 
-Each node executes its assigned task and sends the result back to the requesting node.
+* **Auto Chunking**
+
+  * System automatically determines optimal number of chunks based on cluster capacity
+
+* **Batch Scheduling**
+
+  * Relay assigns multiple chunks per request to reduce communication overhead
+
+* **Concurrency Control**
+
+  * Nodes limit parallel execution using semaphores to prevent overload
+
+* **Stable WebSocket Architecture**
+
+  * Single sender queue ensures safe, reliable communication
+
+* **Docker-Based Execution**
+
+  * Secure and isolated execution environment for user jobs
+
+* **Persistent Job Storage**
+
+  * Jobs survive relay restarts
+
+* **Real-Time Monitoring**
+
+  * CPU/RAM tracking + live logs + job progress
 
 ---
 
 # Architecture
 
-```
-                 ┌─────────────────┐
-                 │   Relay Server  │
-                 │ (WebSocket Hub) │
-                 └────────┬────────┘
-                          │
-          ┌───────────────┼───────────────┐
-          │               │               │
-     ┌─────────┐     ┌─────────┐     ┌─────────┐
-     │ Node 1  │     │ Node 2  │     │ Node 3  │
-     │Compute  │     │Compute  │     │Compute  │
-     └─────────┘     └─────────┘     └─────────┘
-```
+## 1️⃣ Relay Server (FastAPI)
 
-Components:
+* Central coordinator
+* Handles job submission, scheduling, and aggregation
+* Maintains cluster state
 
-**Relay Server**
+### Responsibilities:
 
-* WebSocket message router
-* Node registry
-* Cluster resource monitor
-
-**Nodes**
-
-* Compute execution engine
-* Task registry
-* Distributed scheduler
-* Resource monitor
+* Accept job uploads
+* Split and schedule tasks
+* Track node resources
+* Aggregate results (reducers)
+* Serve APIs for UI
 
 ---
 
-# Key Features
+## 2️⃣ Worker Nodes
 
-### Distributed Task Execution
+* Connect to relay via WebSocket
+* Pull work dynamically
+* Execute jobs in Docker containers
 
-Tasks are divided into chunks and executed across multiple nodes.
+### Features:
 
-### Parallel Processing
-
-Nodes execute workloads simultaneously for faster computation.
-
-### Resource Monitoring
-
-Each node periodically reports CPU and RAM usage to the relay server.
-
-### Resource-Aware Scheduling
-
-Tasks are assigned to nodes with the lowest CPU and RAM utilization.
-
-### Task Registry
-
-Nexus supports multiple compute tasks through a modular registry system.
-
-### Fault Tolerant Execution
-
-Nexus automatically retries distributed tasks if a worker node fails during execution.  
-Chunks are reassigned to available nodes to ensure job completion.
-
-### Organized API Documentation
-
-FastAPI endpoints are grouped using tags, providing a clean and structured API interface in `/docs`.
+* Adaptive batching
+* Concurrency control
+* Resource monitoring
+* Fault-tolerant execution
 
 ---
 
-# Supported Distributed Tasks
+## 3️⃣ Execution Flow
 
-| Task            | Description                     |
-| --------------- | ------------------------------- |
-| `sum`           | Sum of numbers in a range       |
-| `prime_count`   | Counts prime numbers in a range |
-| `vector_sum`    | Sum of squared numbers          |
-| `factorial_sum` | Sum of factorial values         |
-| `fibonacci_sum` | Sum of fibonacci numbers        |
-| `power_sum`     | Sum of fifth powers             |
+1. User uploads `job.zip`
+2. Relay determines chunk count (auto/manual)
+3. Nodes request work
+4. Relay assigns chunks (batched)
+5. Nodes:
 
+   * download job
+   * execute in Docker
+   * send results + logs
+6. Relay:
 
-New tasks can be easily added through the **task registry**.
+   * aggregates results
+   * updates job status
+7. UI displays progress + results
+
+---
+
+# Job Format
+
+Each job must include a `main.py` file:
+
+```python
+def run(chunk_id, total_chunks):
+    # user logic
+    return result
+```
+
+OR CLI-style:
+
+```python
+if __name__ == "__main__":
+    # parse args and call run()
+```
+
+### Important Rule:
+
+* The **last printed line must be the result**
+* All previous prints are treated as logs
+
+---
+
+# Core Concept
+
+Nexus follows a **MAP → REDUCE** model:
+
+* Each chunk processes a subset of data
+* Final result is aggregated using reducers
+
+### Supported Reducers:
+
+* `sum`
+* `avg`
+* `min`
+* `max`
+* `list`
+
+---
+
+# Execution Environment
+
+Each chunk runs inside:
+
+* Isolated Docker container
+* Limited CPU & RAM
+* Mounted job directory
+
+---
+
+# Stability Improvements (v4)
+
+* Async-safe WebSocket communication (single sender queue)
+* Background execution using asyncio
+* Concurrency limits per node
+* Adaptive batching
+* Retry handling for failed chunks
+
+---
+
+# Dashboard Features
+
+* Upload jobs (ZIP)
+* Select reducer
+* View cluster nodes
+* Track job progress
+* View logs (per chunk)
+* View final results
+
+---
+
+# CLI Usage
+
+### Start a node
+
+```bash
+nexus-node start
+```
+
+### Custom node
+
+```bash
+nexus-node start --node-id node_1 --port 5001
+```
 
 ---
 
@@ -110,239 +188,56 @@ New tasks can be easily added through the **task registry**.
 
 ```
 Nexus/
-│
 ├── relay/
-│   ├── relay.py
-│   └── __init__.py
-│
-├── node.py
-├── relay_client.py
-├── relay_task.py
-├── relay_registry.py
-├── scheduler.py
-├── resource_monitor.py
-├── tasks_registry.py
-├── compute.py
-├── config.py
-├── logger.py
-├── requirements.txt
+├── node/
+├── dashboard/
+├── jobs/
+├── nexus_cli.py
 └── README.md
 ```
 
 ---
 
-# Running the Relay Server
+# Current Limitations
 
-Start the relay server:
-
-```
-uvicorn relay.relay:app --host 0.0.0.0 --port 9000
-```
-
-Relay responsibilities:
-
-* Node communication
-* Task routing
-* Resource tracking
-* Cluster status
+* Relay is a single point of coordination
+* No authentication system
+* No GPU scheduling
+* Static scheduling heuristics (partially adaptive)
 
 ---
 
-# Running Nexus Nodes
+# Future Roadmap
 
-Each computer runs a Nexus node.
-
-Example:
-
-```
-NODE_ID=node_1 python -m uvicorn node:app --port 5001
-```
-
-Second machine:
-
-```
-NODE_ID=node_2 python -m uvicorn node:app --port 5002
-```
-
-Nodes automatically:
-
-* connect to relay
-* report resources
-* receive compute tasks
+* Adaptive concurrency (dynamic tuning)
+* Node reputation system
+* Predictive scheduling
+* Multi-relay architecture
+* GPU-aware execution
+* Distributed storage integration
 
 ---
 
-# Executing a Distributed Task
+# Vision
 
-Open the API documentation:
+Transform Nexus into:
 
-```
-http://localhost:5001/docs
-```
-
-Use the endpoint:
-
-```
-POST /distributed_task
-```
-
-Example request:
-
-```json
-{
-  "task": "prime_count",
-  "start": 1,
-  "end": 100000
-}
-```
-
-The workload will automatically be distributed across connected nodes.
-
----
-## Running Nexus Node (Executable)
-
-Nexus nodes can be started using the standalone executable without installing Python or cloning the repository.
-
-### Step 1 — Download
-
-Download the `nexus-node.exe` file from the repository.
-
-### Step 2 — Start a Node
-
-Run the following command:
-
-```bash
-.\nexus-node.exe start --node-id node_1 --port 5001
-```
-
-Example:
-
-```bash
-.\nexus-node.exe start --node-id node_1 --port 5001
-```
-
-### Parameters
-
-| Parameter | Description |
-|----------|-------------|
-| `--node-id` | Unique identifier for the node |
-| `--port` | Port on which the node will run |
-
-Example for a second node:
-
-```bash
-.\nexus-node.exe start --node-id node_2 --port 5002
-```
-
-### Access Node API
-
-After starting the node, open:
-
-```
-http://localhost:PORT/docs
-```
-
-Example:
-
-```
-http://localhost:5001/docs
-```
-
-This opens the interactive API where you can trigger distributed tasks.
-
-### Example Distributed Task
-
-From Node 1:
-
-```
-POST /distributed_task
-```
-
-Payload example:
-
-```json
-{
-  "task": "sum",
-  "start": 1,
-  "end": 100000000
-}
-```
-
-The workload will automatically be distributed across available Nexus nodes.
+> A lightweight, intelligent, and extensible distributed compute platform accessible to developers and students alike.
 
 ---
 
-### Example Network Setup
+# Contributing
 
-Machine 1:
+Contributions are welcome!
 
-```
-.\nexus-node.exe start --node-id node_1 --port 5001
-```
-
-Machine 2:
-
-```
-.\nexus-node.exe start --node-id node_2 --port 5002
-```
-
-Both nodes automatically connect to the Nexus relay server and become part of the compute network.
----
-# Cluster Monitoring
-
-Relay endpoints:
-
-```
-/nodes
-/resources
-/cluster_status
-```
-
-Example:
-
-```
-https://nexus-relay-5wog.onrender.com/cluster_status
-```
-
-Returns connected nodes and their resource usage.
+* Open issues
+* Suggest features
+* Submit PRs
 
 ---
 
-# Example Workflow
+# Final Note
 
-1. Start relay server
-2. Start multiple Nexus nodes
-3. Submit distributed task
-4. Scheduler selects best nodes
-5. Nodes execute chunks
-6. Results are aggregated
+Nexus v4.0.0 marks the transition from a working prototype to an **intelligent distributed system**.
 
----
-
-# Roadmap
-
-### v1
-
-Local distributed computation
-
-### v2
-
-Internet-connected nodes using relay transport
-
-### v3
-
-Resource-aware distributed compute framework with retry-based fault tolerance
-
-### v4 (Planned)
-
-Secure sandboxed execution of arbitrary workloads
-
----
-
-# Use Cases
-
-* Distributed mathematical computation
-* Parallel simulations
-* CPU-intensive research workloads
-* Experimental distributed computing systems
-* Educational distributed systems platform
+If you found this useful, consider ⭐ starring the repository!
