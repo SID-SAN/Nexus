@@ -115,19 +115,19 @@ async def sender_loop():
 
         message = await send_queue.get()
 
-        ws = websocket_connection  # snapshot
-
-        if ws is None:
+        if websocket_connection is None:
             print("[Sender] No connection, retrying...")
             await asyncio.sleep(1)
-            await send_queue.put(message)  # put it back
+            await send_queue.put(message)
             continue
 
         try:
-            await ws.send(json.dumps(message))
+            await websocket_connection.send(json.dumps(message))
+            print("[Sender] Sent:", message["type"])
         except Exception as e:
-            print(f"[Sender] Dropping message (connection issue): {e}")
-
+            print(f"[Sender] Retry sending: {e}")
+            await asyncio.sleep(1)
+            await send_queue.put(message)
 
 # -----------------------------
 # 🔌 CONNECT TO RELAY
