@@ -391,21 +391,24 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["completed"] += 1
 
                 # 🔥 CREDIT REWARD LOGIC
-                node_id = message["source"]
-                user_id = node_owner_map.get(node_id)
+                sender_node_id = message["source"]
+                user_id = node_owner_map.get(sender_node_id)
 
                 if user_id:
-                    # simple equal distribution
-                    reward = job["price"] / job["chunks"]
+                    price = job.get("price", 0)
 
-                    # find user and update credits
-                    for key, u in users.items():
-                        if u["user_id"] == user_id:
-                            u["credits"] += reward
-                            print(f"[Credits] +{reward} → {user_id}")
-                            break
+                    if price > 0:
+                        reward = price / job["chunks"]
 
-                    save_users(users)
+                        for key, u in users.items():
+                            if u["user_id"] == user_id:
+                                u["credits"] += reward
+                                print(f"[Credits] +{reward} → {user_id}")
+                                break
+
+                        save_users(users)
+                    else:
+                        print("⚠️ No price set for job, skipping reward")
                 
 
                 if job["completed"] == job["chunks"]:

@@ -1,6 +1,10 @@
 {
-  "test_key_123": {
-    "user_id": "user_1",
+  "user_A_key": {
+    "user_id": "user_A",
     "credits": 500
+  },
+  "user_B_key": {
+    "user_id": "user_B",
+    "credits": 100
   }
 }
