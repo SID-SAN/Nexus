@@ -19,8 +19,9 @@ os.makedirs(JOB_DIR, exist_ok=True)
 connected_nodes = {}
 node_resources = {}
 node_last_seen = {}
-
 jobs = load_jobs()
+
+
 
 # -----------------------------
 # CONFIG
@@ -29,6 +30,24 @@ MAX_RETRIES = 2
 CHUNK_TIMEOUT = 60
 NODE_TIMEOUT = 60
 
+
+# -----------------------------
+# USER MANAGEMENT
+# -----------------------------
+def load_users():
+    try:
+        with open("users.json", "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_users(users):
+    with open("users.json", "w") as f:
+        json.dump(users, f, indent=2)
+
+users = load_users()
+node_owner_map = {}
+        
 
 # -----------------------------
 # SAFE SEND
@@ -199,8 +218,26 @@ def download_job(job_id: str):
 # JOB SUBMISSION
 # -----------------------------
 @app.post("/submit_job")
-async def submit_job(file: UploadFile = File(...), chunks: int = Form(None), reducer: str = Form("sum")):
+async def submit_job(
+    file: UploadFile = File(...),
+    chunks: int = Form(None),
+    reducer: str = Form("sum"),
+    api_key: str = Form(...),
+    price: int = Form(...)
+):
+    
+    user = users.get(api_key)
 
+    if not user:
+        return {"error": "invalid api key"}
+
+    if user["credits"] < price:
+        return {"error": "insufficient credits"}
+
+    # deduct credits
+    user["credits"] -= price
+    save_users(users)
+    
     if not chunks or chunks <= 0:
         chunks = auto_calculate_chunks()
 
@@ -221,7 +258,9 @@ async def submit_job(file: UploadFile = File(...), chunks: int = Form(None), red
         "retries": {},
         "completed": 0,
         "status": "running",
-        "reducer": reducer
+        "reducer": reducer,
+        "price": price,
+        "owner": user["user_id"]
     }
 
     save_jobs(jobs)
@@ -236,6 +275,24 @@ async def submit_job(file: UploadFile = File(...), chunks: int = Form(None), red
 async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
     await websocket.accept()
+
+    # 🔥 STEP 1: Extract API key
+    api_key = websocket.query_params.get("api_key")
+
+    if not api_key or api_key not in users:
+        print(f"[Auth] Invalid API key from {node_id}")
+        await websocket.close()
+        return
+
+    # 🔥 STEP 2: Map node → user
+    user_id = users[api_key]["user_id"]
+    node_owner_map[node_id] = user_id
+
+    print(f"[Auth] Node {node_id} linked to user {user_id}")
+
+    # continue normal flow
+    connected_nodes[node_id] = websocket
+    node_last_seen[node_id] = time.time()
 
     connected_nodes[node_id] = websocket
     node_last_seen[node_id] = time.time()
@@ -329,6 +386,24 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["errors"][chunk] = payload.get("error", "")
                 job["status_map"][chunk] = "completed"
                 job["completed"] += 1
+
+                # 🔥 CREDIT REWARD LOGIC
+                node_id = message["source"]
+                user_id = node_owner_map.get(node_id)
+
+                if user_id:
+                    # simple equal distribution
+                    reward = job["price"] / job["chunks"]
+
+                    # find user and update credits
+                    for key, u in users.items():
+                        if u["user_id"] == user_id:
+                            u["credits"] += reward
+                            print(f"[Credits] +{reward} → {user_id}")
+                            break
+
+                    save_users(users)
+                
 
                 if job["completed"] == job["chunks"]:
                     job["status"] = "completed"
@@ -589,11 +664,14 @@ def dashboard():
 
             formData.append("reducer", reducer);
 
+            formData.append("api_key", "test_key_123");  // temp hardcoded
+            formData.append("price", 100);               // test value
+
             const res = await fetch('/submit_job', {
                 method: 'POST',
                 body: formData
             });
-
+            
             const data = await res.json();
 
             document.getElementById("submitStatus").innerText =

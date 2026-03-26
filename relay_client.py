@@ -9,8 +9,8 @@ from node.downloader import download_job
 from node.executor import execute_job
 import aiohttp
 
-RELAY_URL = f"wss://nexus-relay-5wog.onrender.com/ws/{NODE_ID}"
-RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
+RELAY_URL = f"wss://nexus-wr6s.onrender.com/ws/{NODE_ID}?api_key=test_key_123"
+RELAY_HTTP_URL = "https://nexus-wr6s.onrender.com"
 
 websocket_connection = None
 pending_results = {}

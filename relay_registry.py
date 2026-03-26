@@ -1,7 +1,5 @@
 import requests
-
-RELAY_URL = "https://nexus-relay-5wog.onrender.com"
-
+from config import RELAY_URL
 
 def fetch_nodes():
     try:
