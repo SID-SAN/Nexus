@@ -670,7 +670,7 @@ def dashboard():
 
             formData.append("reducer", reducer);
 
-            formData.append("api_key", "test_key_123");  // temp hardcoded
+            formData.append("api_key", "user_A_key");  // temp hardcoded
             formData.append("price", 100);               // test value
 
             const res = await fetch('/submit_job', {
