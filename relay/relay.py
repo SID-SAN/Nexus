@@ -297,9 +297,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     connected_nodes[node_id] = websocket
     node_last_seen[node_id] = time.time()
 
-    connected_nodes[node_id] = websocket
-    node_last_seen[node_id] = time.time()
-
     print(f"Node connected: {node_id}")
 
     try:
@@ -391,7 +388,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["completed"] += 1
 
                 # 🔥 CREDIT REWARD LOGIC
-                sender_node_id = message["source"]
+                sender_node_id = node_id
                 user_id = node_owner_map.get(sender_node_id)
 
                 if user_id:
