@@ -55,10 +55,8 @@ async def run_single_chunk(job_id, chunk, total_chunks):
             }
         }
 
-        if websocket_connection:
-            await send_queue.put(response)
-        else:
-            print("[V4] Skipping send (no connection)")
+        await send_queue.put(response)
+        print("[Node] Queued result:", response)
 
         print(f"[V4] Submitted chunk {chunk}")
 
@@ -120,6 +118,9 @@ async def sender_loop():
         ws = websocket_connection  # snapshot
 
         if ws is None:
+            print("[Sender] No connection, retrying...")
+            await asyncio.sleep(1)
+            await send_queue.put(message)  # put it back
             continue
 
         try:

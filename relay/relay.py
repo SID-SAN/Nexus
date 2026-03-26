@@ -362,6 +362,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             elif msg_type == "submit_result":
 
+                print("RESULT RECEIVED FROM:", node_id)
+                print("FULL MESSAGE:", message)
                 payload = message["payload"]
                 job_id = payload["job_id"]
                 chunk = str(payload["chunk"])
