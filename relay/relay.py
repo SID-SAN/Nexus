@@ -236,8 +236,7 @@ async def submit_job(
         user = get_user_by_api_key(api_key)
     except Exception as e:
         print("❌ Supabase error:", e)
-        await websocket.close()
-        return
+        return {"error": "internal server error"}
     
     if not user:
         return {"error": "invalid api key"}
@@ -247,8 +246,6 @@ async def submit_job(
 
     new_credits = user["credits"] - price
     # find api_key of this user
-    user = get_user_by_id(user)
-
     api_key = user["api_key"]
 
     update_user_credits_by_api_key(api_key, new_credits) 
@@ -421,8 +418,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                                 continue
 
                             new_credits = user["credits"] + reward
-                            update_user_credits(user_id, new_credits)
-
+                            api_key = user["api_key"]
+                            update_user_credits_by_api_key(api_key, new_credits)
                         except Exception as e:
                             print("❌ Credit update failed:", e)
                     else:
