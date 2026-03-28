@@ -418,8 +418,11 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                                 continue
 
                             new_credits = user["credits"] + reward
-                            api_key = user["api_key"]
+
+                            api_key = user["api_key"]   # 🔥 THIS IS THE FIX
+
                             update_user_credits_by_api_key(api_key, new_credits)
+                            
                         except Exception as e:
                             print("❌ Credit update failed:", e)
                     else:
