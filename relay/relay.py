@@ -49,10 +49,10 @@ def get_user_by_id(user_id):
     return res.data[0] if res.data else None
 
 
-def update_user_credits(user_id, new_credits):
+def update_user_credits_by_api_key(api_key, new_credits):
     supabase.table("users").update({
         "credits": new_credits
-    }).eq("user_id", user_id).execute()
+    }).eq("api_key", api_key).execute()
         
 
 # -----------------------------
@@ -246,8 +246,13 @@ async def submit_job(
         return {"error": "insufficient credits"}
 
     new_credits = user["credits"] - price
-    update_user_credits(user["user_id"], new_credits)
-    
+    # find api_key of this user
+    user = get_user_by_id(user)
+
+    api_key = user["api_key"]
+
+    update_user_credits_by_api_key(api_key, new_credits) 
+
     if not chunks or chunks <= 0:
         chunks = auto_calculate_chunks()
 
