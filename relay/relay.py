@@ -12,7 +12,7 @@ app = FastAPI()
 from supabase import create_client
 
 SUPABASE_URL = "https://cdbbdmhxzlmumthlgesi.supabase.co"
-SUPABASE_KEY = "Nexus@supabase"
+SUPABASE_KEY = "sb_publishable_dap71uPIBSGUM6mvtEjXgQ_ufDpsELi"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # -----------------------------
@@ -232,8 +232,13 @@ async def submit_job(
     price: int = Form(...)
 ):
     
-    user = get_user_by_api_key(api_key)
-
+    try:
+        user = get_user_by_api_key(api_key)
+    except Exception as e:
+        print("❌ Supabase error:", e)
+        await websocket.close()
+        return
+    
     if not user:
         return {"error": "invalid api key"}
 
@@ -402,16 +407,19 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                     if price > 0:
                         reward = price / job["chunks"]
+                        
+                        try:
+                            user = get_user_by_id(user_id)
 
-                        user = get_user_by_id(user_id)
+                            if not user:
+                                print("❌ User not found in DB")
+                                continue
 
-                        new_credits = user["credits"] + reward
+                            new_credits = user["credits"] + reward
+                            update_user_credits(user_id, new_credits)
 
-                        print(f"[Credits] BEFORE: {user['credits']}")
-                        print(f"[Credits] ADDING: {reward}")
-                        print(f"[Credits] AFTER: {new_credits}")
-
-                        update_user_credits(user_id, new_credits)
+                        except Exception as e:
+                            print("❌ Credit update failed:", e)
                     else:
                         print("⚠️ No price set for job, skipping reward")
                 
