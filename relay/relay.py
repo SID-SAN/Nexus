@@ -9,7 +9,12 @@ import time
 from relay.job_persistence import load_jobs, save_jobs
 
 app = FastAPI()
+from supabase import create_client
 
+SUPABASE_URL = "https://cdbbdmhxzlmumthlgesi.supabase.co"
+SUPABASE_KEY = "Nexus@supabase"
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # -----------------------------
 # Storage
 # -----------------------------
@@ -20,7 +25,7 @@ connected_nodes = {}
 node_resources = {}
 node_last_seen = {}
 jobs = load_jobs()
-
+node_owner_map = {}
 
 
 # -----------------------------
@@ -34,19 +39,20 @@ NODE_TIMEOUT = 60
 # -----------------------------
 # USER MANAGEMENT
 # -----------------------------
-def load_users():
-    try:
-        with open("users.json", "r") as f:
-            return json.load(f)
-    except:
-        return {}
+def get_user_by_api_key(api_key):
+    res = supabase.table("users").select("*").eq("api_key", api_key).execute()
+    return res.data[0] if res.data else None
 
-def save_users(users):
-    with open("users.json", "w") as f:
-        json.dump(users, f, indent=2)
 
-users = load_users()
-node_owner_map = {}
+def get_user_by_id(user_id):
+    res = supabase.table("users").select("*").eq("user_id", user_id).execute()
+    return res.data[0] if res.data else None
+
+
+def update_user_credits(user_id, new_credits):
+    supabase.table("users").update({
+        "credits": new_credits
+    }).eq("user_id", user_id).execute()
         
 
 # -----------------------------
@@ -226,7 +232,7 @@ async def submit_job(
     price: int = Form(...)
 ):
     
-    user = users.get(api_key)
+    user = get_user_by_api_key(api_key)
 
     if not user:
         return {"error": "invalid api key"}
@@ -234,9 +240,8 @@ async def submit_job(
     if user["credits"] < price:
         return {"error": "insufficient credits"}
 
-    # deduct credits
-    user["credits"] -= price
-    save_users(users)
+    new_credits = user["credits"] - price
+    update_user_credits(user["user_id"], new_credits)
     
     if not chunks or chunks <= 0:
         chunks = auto_calculate_chunks()
@@ -281,15 +286,14 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     api_key = websocket.query_params.get("api_key")
 
     print("DEBUG API KEY:", api_key)
-    print("DEBUG USERS:", users)
+    user = get_user_by_api_key(api_key)
 
-    if not api_key or api_key not in users:
+    if not user:
         print("❌ INVALID API KEY")
         await websocket.close()
         return
 
-    user_id = users[api_key]["user_id"]
-    node_owner_map[node_id] = user_id
+    user_id = user["user_id"]
 
     print(f"[Auth] Node {node_id} linked to user {user_id}")
 
@@ -399,13 +403,15 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if price > 0:
                         reward = price / job["chunks"]
 
-                        for key, u in users.items():
-                            if u["user_id"] == user_id:
-                                u["credits"] += reward
-                                print(f"[Credits] +{reward} → {user_id}")
-                                break
+                        user = get_user_by_id(user_id)
 
-                        save_users(users)
+                        new_credits = user["credits"] + reward
+
+                        print(f"[Credits] BEFORE: {user['credits']}")
+                        print(f"[Credits] ADDING: {reward}")
+                        print(f"[Credits] AFTER: {new_credits}")
+
+                        update_user_credits(user_id, new_credits)
                     else:
                         print("⚠️ No price set for job, skipping reward")
                 
