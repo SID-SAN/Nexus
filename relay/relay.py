@@ -50,9 +50,12 @@ def get_user_by_id(user_id):
 
 
 def update_user_credits_by_api_key(api_key, new_credits):
-    supabase.table("users").update({
+
+    res = supabase.table("users").update({
         "credits": new_credits
     }).eq("api_key", api_key).execute()
+
+    print("🔥 UPDATE RESPONSE:", res)
         
 
 # -----------------------------
@@ -420,7 +423,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                             new_credits = user["credits"] + reward
 
                             api_key = user["api_key"]   # 🔥 THIS IS THE FIX
-
+                            print("DEBUG API KEY USED:", api_key)
                             update_user_credits_by_api_key(api_key, new_credits)
                             
                         except Exception as e:
