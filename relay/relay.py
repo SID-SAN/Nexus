@@ -306,9 +306,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
         return
 
     user_id = user["user_id"]
-
+    node_owner_map[node_id] = user_id
+    
     print(f"[Auth] Node {node_id} linked to user {user_id}")
-
+    
     # continue normal flow
     connected_nodes[node_id] = websocket
     node_last_seen[node_id] = time.time()
