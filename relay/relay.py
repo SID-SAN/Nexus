@@ -879,18 +879,28 @@ def dashboard():
 
         async function createUser() {
 
+            const email = document.getElementById("email").value;
+            const password = document.getElementById("password").value;
+
+            const formData = new FormData();
+            formData.append("email", email);
+            formData.append("password", password);
+
             const res = await fetch('/create_user', {
-                method: 'POST'
+                method: 'POST',
+                body: formData
             });
 
             const data = await res.json();
 
-            document.getElementById("newUser").innerHTML =
-                `User: ${data.user_id}<br>
-                API Key: <b>${data.api_key}</b>
-                <button onclick="navigator.clipboard.writeText('${data.api_key}')">
-                    Copy
-                </button>`;
+            console.log(data);
+
+            if (data.error) {
+                alert("Error creating user");
+                return;
+            }
+
+            alert("User created!\nAPI Key: " + data.api_key);
         }
 
         async function fetchCredits() {
