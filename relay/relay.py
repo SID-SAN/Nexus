@@ -508,7 +508,7 @@ def job_logs(job_id: str):
 
 
 @app.post("/create_user")
-def create_user():
+def create_user(email: str = Form(...), password: str = Form(...)):
 
     import uuid
 
@@ -518,7 +518,9 @@ def create_user():
     supabase.table("users").insert({
         "user_id": user_id,
         "api_key": api_key,
-        "credits": 100   # starter credits
+        "email": email,
+        "password": password,
+        "credits": 100
     }).execute()
 
     return {
@@ -536,6 +538,27 @@ def get_user(api_key: str):
         return {"error": "not found"}
 
     return user
+
+
+@app.post("/login")
+def login(email: str = Form(...), password: str = Form(...)):
+
+    res = supabase.table("users")\
+        .select("*")\
+        .eq("email", email)\
+        .eq("password", password)\
+        .execute()
+
+    if not res.data:
+        return {"error": "invalid credentials"}
+
+    user = res.data[0]
+
+    return {
+        "api_key": user["api_key"],
+        "user_id": user["user_id"],
+        "credits": user["credits"]
+    }
 
 
 from fastapi.responses import HTMLResponse
@@ -615,6 +638,16 @@ def dashboard():
 
         <h1>⚡ Nexus Cluster Dashboard</h1>
 
+        <h2>🔐 Login</h2>
+        <div class="card">
+            <input type="text" id="email" placeholder="Email"><br><br>
+            <input type="password" id="password" placeholder="Password"><br><br>
+
+            <button onclick="login()">Login</button>
+
+            <p id="loginStatus"></p>
+        </div>
+
         <!-- JOB SUBMISSION -->
         <h2>🚀 Submit Job</h2>
 
@@ -630,8 +663,6 @@ def dashboard():
                 <option value="min">min</option>
                 <option value="list">list</option>
             </select><br><br>
-
-            <input type="text" id="apiKey" placeholder="Enter API Key"><br><br>
 
             <button onclick="submitJob()">Submit Job</button>
 
@@ -730,7 +761,8 @@ def dashboard():
 
             formData.append("reducer", reducer);
 
-            const apiKey = document.getElementById("apiKey").value;
+            const apiKey = localStorage.getItem("api_key");   
+
             formData.append("api_key", apiKey); 
 
             formData.append("price", 100);
@@ -863,8 +895,8 @@ def dashboard():
 
         async function fetchCredits() {
 
-            const apiKey = document.getElementById("apiKey").value;
-
+            const apiKey = localStorage.getItem("api_key");
+            
             if (!apiKey) return;
 
             const res = await fetch(`/user/${apiKey}`);
@@ -874,6 +906,34 @@ def dashboard():
                 document.getElementById("userCredits").innerText =
                     "Credits: " + data.credits;
             }
+        }
+
+        async function login() {
+
+            const email = document.getElementById("email").value;
+            const password = document.getElementById("password").value;
+
+            const formData = new FormData();
+            formData.append("email", email);
+            formData.append("password", password);
+
+            const res = await fetch('/login', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await res.json();
+
+            if (data.error) {
+                document.getElementById("loginStatus").innerText = "❌ Login failed";
+                return;
+            }
+
+            // 🔥 STORE API KEY
+            localStorage.setItem("api_key", data.api_key);
+
+            document.getElementById("loginStatus").innerText =
+                "✅ Logged in as " + data.user_id;
         }
 
         setInterval(fetchCredits, 2000);
