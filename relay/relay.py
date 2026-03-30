@@ -40,8 +40,12 @@ NODE_TIMEOUT = 60
 # USER MANAGEMENT
 # -----------------------------
 def get_user_by_api_key(api_key):
-    res = supabase.table("users").select("*").eq("api_key", api_key).execute()
-    return res.data[0] if res.data else None
+    try:
+        res = supabase.table("users").select("*").eq("api_key", api_key).execute()
+        return res.data[0] if res.data else None
+    except Exception as e:
+        print("DB ERROR:", e)
+        return None
 
 
 def get_user_by_id(user_id):
@@ -879,8 +883,21 @@ def dashboard():
 
         async function createUser() {
 
+            const email = document.getElementById("email").value;
+            const password = document.getElementById("password").value;
+
+            if (!email || !password) {
+                alert("Enter email and password");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("email", email);
+            formData.append("password", password);
+
             const res = await fetch('/create_user', {
-                method: 'POST'
+                method: 'POST',
+                body: formData
             });
 
             const data = await res.json();
