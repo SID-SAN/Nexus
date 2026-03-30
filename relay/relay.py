@@ -507,6 +507,35 @@ def job_logs(job_id: str):
     }
 
 
+@app.post("/create_user")
+def create_user():
+
+    import uuid
+
+    user_id = f"user_{uuid.uuid4().hex[:6]}"
+    api_key = f"key_{uuid.uuid4().hex}"
+
+    supabase.table("users").insert({
+        "user_id": user_id,
+        "api_key": api_key,
+        "credits": 100   # starter credits
+    }).execute()
+
+    return {
+        "user_id": user_id,
+        "api_key": api_key
+    }
+
+
+@app.get("/user/{api_key}")
+def get_user(api_key: str):
+
+    user = get_user_by_api_key(api_key)
+
+    if not user:
+        return {"error": "not found"}
+
+    return user
 
 
 from fastapi.responses import HTMLResponse
@@ -602,9 +631,16 @@ def dashboard():
                 <option value="list">list</option>
             </select><br><br>
 
+            <input type="text" id="apiKey" placeholder="Enter API Key"><br><br>
+
             <button onclick="submitJob()">Submit Job</button>
 
             <p id="submitStatus"></p>
+
+            <button onclick="createUser()">Create New User</button>
+            <p id="newUser"></p>
+            <p id="userCredits"></p>
+
         </div>
 
         <!-- NODES -->
@@ -694,8 +730,10 @@ def dashboard():
 
             formData.append("reducer", reducer);
 
-            formData.append("api_key", "user_A_key");  // temp hardcoded
-            formData.append("price", 100);               // test value
+            const apiKey = document.getElementById("apiKey").value;
+            formData.append("api_key", apiKey); 
+
+            formData.append("price", 100);
 
             const res = await fetch('/submit_job', {
                 method: 'POST',
@@ -806,6 +844,39 @@ def dashboard():
 
             document.getElementById("jobs").innerHTML = jobHTML;
         }
+
+        async function createUser() {
+
+            const res = await fetch('/create_user', {
+                method: 'POST'
+            });
+
+            const data = await res.json();
+
+            document.getElementById("newUser").innerHTML =
+                `User: ${data.user_id}<br>
+                API Key: <b>${data.api_key}</b>
+                <button onclick="navigator.clipboard.writeText('${data.api_key}')">
+                    Copy
+                </button>`;
+        }
+
+        async function fetchCredits() {
+
+            const apiKey = document.getElementById("apiKey").value;
+
+            if (!apiKey) return;
+
+            const res = await fetch(`/user/${apiKey}`);
+            const data = await res.json();
+
+            if (data.credits !== undefined) {
+                document.getElementById("userCredits").innerText =
+                    "Credits: " + data.credits;
+            }
+        }
+
+        setInterval(fetchCredits, 2000);
 
         setInterval(fetchData, 2000);
         fetchData();
