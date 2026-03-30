@@ -40,8 +40,12 @@ NODE_TIMEOUT = 60
 # USER MANAGEMENT
 # -----------------------------
 def get_user_by_api_key(api_key):
-    res = supabase.table("users").select("*").eq("api_key", api_key).execute()
-    return res.data[0] if res.data else None
+    try:
+        res = supabase.table("users").select("*").eq("api_key", api_key).execute()
+        return res.data[0] if res.data else None
+    except Exception as e:
+        print("DB ERROR:", e)
+        return None
 
 
 def get_user_by_id(user_id):
@@ -903,19 +907,32 @@ def dashboard():
             alert("User created!\nAPI Key: " + data.api_key);
         }
 
+        let fetchingCredits = false;
+
         async function fetchCredits() {
 
+            if (fetchingCredits) return;
+            fetchingCredits = true;
+
             const apiKey = localStorage.getItem("api_key");
-            
-            if (!apiKey) return;
-
-            const res = await fetch(`/user/${apiKey}`);
-            const data = await res.json();
-
-            if (data.credits !== undefined) {
-                document.getElementById("userCredits").innerText =
-                    "Credits: " + data.credits;
+            if (!apiKey) {
+                fetchingCredits = false;
+                return;
             }
+
+            try {
+                const res = await fetch(`/user/${apiKey}`);
+                const data = await res.json();
+
+                if (data.credits !== undefined) {
+                    document.getElementById("userCredits").innerText =
+                        "Credits: " + data.credits;
+                }
+            } catch (e) {
+                console.log("Credit fetch failed");
+            }
+
+            fetchingCredits = false;
         }
 
         async function login() {
@@ -946,9 +963,9 @@ def dashboard():
                 "✅ Logged in as " + data.user_id;
         }
 
-        setInterval(fetchCredits, 2000);
+        setInterval(fetchCredits, 5000);
 
-        setInterval(fetchData, 2000);
+        setInterval(fetchData, 5000);
         fetchData();
 
         </script>
