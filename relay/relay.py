@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse
 import json
@@ -40,18 +41,8 @@ NODE_TIMEOUT = 60
 # USER MANAGEMENT
 # -----------------------------
 def get_user_by_api_key(api_key):
-    try:
-        res = supabase.table("users").select("*").eq("api_key", api_key).execute()
-        return res.data[0] if res.data else None
-    except Exception as e:
-        print("DB ERROR:", e)
-        return None
-    try:
-        res = supabase.table("users").select("*").eq("api_key", api_key).execute()
-        return res.data[0] if res.data else None
-    except Exception as e:
-        print("DB ERROR:", e)
-        return None
+    res = supabase.table("users").select("*").eq("api_key", api_key).execute()
+    return res.data[0] if res.data else None
 
 
 def get_user_by_id(user_id):
@@ -771,7 +762,13 @@ def dashboard():
 
             formData.append("reducer", reducer);
 
-            const apiKey = localStorage.getItem("api_key");   
+            const apiKey = localStorage.getItem("api_key");  
+
+            if (!apiKey) {
+                alert("Please login first");
+                return;
+            }
+
 
             formData.append("api_key", apiKey); 
 
@@ -834,57 +831,63 @@ def dashboard():
         }
 
 
+        let fetchingData = false;
+
         async function fetchData() {
 
-            const nodes = await fetch('/cluster_status').then(r => r.json());
-            const jobs = await fetch('/all_jobs').then(r => r.json());
+            if (fetchingData) return;
+            fetchingData = true;
 
-            // ---- NODES ----
-            const nodeHTML = nodes.connected_nodes.map(n => `
-                <div class="card">
-                    <b>Node:</b> ${n}
-                </div>
-            `).join('');
+            try {
 
-            document.getElementById("nodes").innerHTML = nodeHTML;
+                const nodesRes = await fetch('/cluster_status');
+                const jobsRes = await fetch('/all_jobs');
 
-            // ---- JOBS ----
-            const jobHTML = Object.entries(jobs).map(([id, j]) => {
+                if (!nodesRes.ok || !jobsRes.ok) {
+                    throw new Error("API failed");
+                }
 
-                let percent = Math.floor((j.completed / j.total) * 100);
+                const nodes = await nodesRes.json();
+                const jobs = await jobsRes.json();
 
-                let statusClass = "status-running";
-                if (j.status === "completed") statusClass = "status-completed";
-                if (j.status === "failed") statusClass = "status-failed";
-                if (j.status === "cancelled") statusClass = "status-cancelled";
-                
-                return `
-                    <div class="card" onclick="viewLogs('${id}')">
-                        <b>Job ID:</b> ${id}<br>
-                        <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
-                        <b>Progress:</b> ${j.completed}/${j.total}
-
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width:${percent}%"></div>
-                        </div>
-
-                        ${j.status === "completed" ? `
-                            <div style="margin-top:10px; color:#22c55e;">
-                                <b>Result:</b> ${j.result}
-                            </div>
-                        ` : ""}
-
-                        ${j.status === "running" ? `
-                            <button onclick="event.stopPropagation(); cancelJob('${id}')" 
-                            style="background:#ef4444; margin-top:10px;">
-                                Cancel Job
-                            </button>
-                        ` : ""}
+                const nodeHTML = (nodes.connected_nodes || []).map(n => `
+                    <div class="card">
+                        <b>Node:</b> ${n}
                     </div>
-                `;
-            }).join('');
+                `).join('');
 
-            document.getElementById("jobs").innerHTML = jobHTML;
+                document.getElementById("nodes").innerHTML = nodeHTML;
+
+                const jobHTML = Object.entries(jobs || {}).map(([id, j]) => {
+
+                    let percent = j.total ? Math.floor((j.completed / j.total) * 100) : 0;
+
+                    let statusClass = "status-running";
+                    if (j.status === "completed") statusClass = "status-completed";
+                    if (j.status === "failed") statusClass = "status-failed";
+                    if (j.status === "cancelled") statusClass = "status-cancelled";
+
+                    return `
+                        <div class="card" onclick="viewLogs('${id}')">
+                            <b>Job ID:</b> ${id}<br>
+                            <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
+                            <b>Progress:</b> ${j.completed}/${j.total}
+
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width:${percent}%"></div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                document.getElementById("jobs").innerHTML = jobHTML;
+
+            } catch (e) {
+                console.log("fetchData failed:", e);
+            }
+
+            // 🔥 ALWAYS RESET (CRITICAL)
+            fetchingData = false;
         }
 
         async function createUser() {
@@ -908,14 +911,9 @@ def dashboard():
 
             const data = await res.json();
 
-            console.log(data);
-
-            if (data.error) {
-                alert("Error creating user");
-                return;
-            }
-
-            alert("User created!\nAPI Key: " + data.api_key);
+            document.getElementById("newUser").innerHTML =
+                `User: ${data.user_id}<br>
+                API Key: <b>${data.api_key}</b>`;
         }
 
         let fetchingCredits = false;
@@ -925,22 +923,28 @@ def dashboard():
             if (fetchingCredits) return;
             fetchingCredits = true;
 
-            const apiKey = localStorage.getItem("api_key");
-            if (!apiKey) {
-                fetchingCredits = false;
-                return;
-            }
-
             try {
+                const apiKey = localStorage.getItem("api_key");
+                if (!apiKey) {
+                    fetchingCredits = false;
+                    return;
+                }
+
                 const res = await fetch(`/user/${apiKey}`);
+                if (!res.ok) {
+                    fetchingCredits = false;
+                    return;
+                }
+
                 const data = await res.json();
 
                 if (data.credits !== undefined) {
                     document.getElementById("userCredits").innerText =
                         "Credits: " + data.credits;
                 }
+
             } catch (e) {
-                console.log("Credit fetch failed");
+                console.log("fetchCredits failed");
             }
 
             fetchingCredits = false;
@@ -1002,4 +1006,3 @@ def dashboard():
     </body>
     </html>
     """
-
