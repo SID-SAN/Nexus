@@ -2,7 +2,14 @@ import argparse
 import os
 import uvicorn
 import uuid
+import socket
 
+def get_free_port():
+    s = socket.socket()
+    s.bind(('', 0))   # 🔥 auto-assign
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 def main():
     parser = argparse.ArgumentParser(
@@ -23,13 +30,6 @@ def main():
         help="Custom Node ID (default: auto-generated)"
     )
 
-    start_parser.add_argument(
-        "--port",
-        type=int,
-        default=5001,
-        help="Port to run node (default: 5001)"
-    )
-
     args = parser.parse_args()
 
     # -----------------------------
@@ -38,14 +38,15 @@ def main():
     if args.command == "start":
 
         node_id = args.node_id or f"node_{uuid.uuid4().hex[:6]}"
-
+        PORT = get_free_port()
+        os.environ["PORT"] = str(PORT)
         os.environ["NODE_ID"] = node_id
 
         print("\n=====================================")
         print("        🚀 NEXUS NODE STARTING       ")
         print("=====================================")
         print(f"Node ID   : {node_id}")
-        print(f"Port      : {args.port}")
+        print(f"Port      : {PORT}")
         print("=====================================\n")
 
         # 🔥 IMPORTANT: correct import
@@ -54,7 +55,7 @@ def main():
         uvicorn.run(
             app,
             host="0.0.0.0",
-            port=args.port
+            port=PORT
         )
 
     else:

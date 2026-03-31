@@ -1,11 +1,23 @@
 import argparse
 import os
 import subprocess
+import socket
 
 
-def start_node(node_id, port, api_key):
+def get_free_port():
+    s = socket.socket()
+    s.bind(('', 0))  # auto-assign free port
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+def start_node(node_id, api_key):
     os.environ["NODE_ID"] = node_id
     os.environ["API_KEY"] = api_key
+
+    port = get_free_port()
+    os.environ["PORT"] = str(port)
+    print(f"[CLI] Starting node {node_id} on port {port}")
 
     subprocess.run([
         "uvicorn",
@@ -15,7 +27,6 @@ def start_node(node_id, port, api_key):
         "--port",
         str(port)
     ])
-
 
 def main():
 
@@ -32,11 +43,6 @@ def main():
     )
 
     parser.add_argument(
-        "--port",
-        default=5001
-    )
-
-    parser.add_argument(
         "--api-key",
         required=True,
         help="API key to authenticate node"
@@ -45,7 +51,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "start":
-        start_node(args.node_id, args.port, args.api_key)
+        start_node(args.node_id, args.api_key)
 
 
 if __name__ == "__main__":
