@@ -6,6 +6,7 @@ import os
 import uuid
 import asyncio
 import time
+import hashlib
 
 from relay.job_persistence import load_jobs, save_jobs
 
@@ -59,6 +60,10 @@ def update_user_credits_by_api_key(api_key, new_credits):
     }).eq("api_key", api_key).execute()
 
     print("UPDATE RESULT:", res)
+
+
+def hash_password(password: str):
+    return hashlib.sha256(password.encode()).hexdigest()
         
 
 # -----------------------------
@@ -529,7 +534,7 @@ def create_user(email: str = Form(...), password: str = Form(...)):
         "user_id": user_id,
         "api_key": api_key,
         "email": email,
-        "password": password,
+        "password": hash_password(password),
         "credits": 100
     }).execute()
 
@@ -553,10 +558,11 @@ def get_user(api_key: str):
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...)):
 
+    hashed = hash_password(password)
     res = supabase.table("users")\
         .select("*")\
         .eq("email", email)\
-        .eq("password", password)\
+        .eq("password", hashed)\
         .execute()
 
     if not res.data:
