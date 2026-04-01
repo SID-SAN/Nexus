@@ -133,6 +133,9 @@ async def monitor_jobs():
                         job["status_map"][chunk] = "pending"
                         job["retries"][chunk] += 1
 
+                        job["errors"][chunk] = f"Retry {job['retries'][chunk]}"
+                        job["updated_at"] = time.time()
+
                     else:
                         print(f"[Failed] chunk {chunk}")
 
@@ -278,7 +281,9 @@ async def submit_job(
         "status": "running",
         "reducer": reducer,
         "price": price,
-        "owner": user["user_id"]
+        "owner": user["user_id"],
+        "created_at": time.time(),
+        "updated_at": time.time()
     }
 
     save_jobs(jobs)
@@ -362,6 +367,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                     chunk = job["queue"].pop(0)
 
+                    if str(chunk) in job["results"]:
+                        continue
+
                     job["status_map"][str(chunk)] = "running"
                     job["assigned_at"][str(chunk)] = time.time()
                     job["retries"].setdefault(str(chunk), 0)
@@ -406,6 +414,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["errors"][chunk] = payload.get("error", "")
                 job["status_map"][chunk] = "completed"
                 job["completed"] += 1
+                job["updated_at"] = time.time()
 
                 # 🔥 CREDIT REWARD LOGIC
                 sender_node_id = node_id
