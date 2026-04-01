@@ -22,7 +22,13 @@ def select_best_nodes(peer_ids, max_nodes=3):
         cpu = resources[node].get("cpu", 100)
         ram = resources[node].get("ram", 100)
 
-        score = cpu * 0.7 + ram * 0.3
+        cpu_norm = cpu / 100
+        ram_norm = ram / 100
+
+        score = (cpu_norm * 0.5) + (ram_norm * 0.5)
+
+        if cpu < 20 and ram < 30:
+            score *= 0.8
 
         node_scores.append((node, score))
 
