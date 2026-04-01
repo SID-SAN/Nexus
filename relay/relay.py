@@ -955,6 +955,11 @@ def dashboard():
             fetchingCredits = false;
         }
 
+        function copyKey(key) {
+            navigator.clipboard.writeText(key);
+            alert("API Key copied!");
+        }
+
         async function login() {
 
             const email = document.getElementById("email").value;
@@ -979,8 +984,10 @@ def dashboard():
             // 🔥 STORE API KEY
             localStorage.setItem("api_key", data.api_key);
 
-            document.getElementById("loginStatus").innerText =
-                "✅ Logged in as " + data.user_id;
+            document.getElementById("loginStatus").innerHTML =
+                `✅ Logged in as ${data.user_id}<br>
+                🔑 API Key: <b>${data.api_key}</b>
+                <button onclick="copyKey('${data.api_key}')">Copy</button>`;
         }
 
         setInterval(fetchCredits, 5000);
