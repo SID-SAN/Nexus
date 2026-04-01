@@ -645,8 +645,10 @@ def dashboard():
             <input type="password" id="password" placeholder="Password"><br><br>
 
             <button onclick="login()">Login</button>
-
+            <button onclick="createUser()">Create New User</button>
             <p id="loginStatus"></p>
+            <p id="newUser"></p>
+            <p id="userCredits"></p>
         </div>
 
         <!-- JOB SUBMISSION -->
@@ -668,10 +670,6 @@ def dashboard():
             <button onclick="submitJob()">Submit Job</button>
 
             <p id="submitStatus"></p>
-
-            <button onclick="createUser()">Create New User</button>
-            <p id="newUser"></p>
-            <p id="userCredits"></p>
 
         </div>
 
@@ -867,11 +865,18 @@ def dashboard():
                     if (j.status === "failed") statusClass = "status-failed";
                     if (j.status === "cancelled") statusClass = "status-cancelled";
 
+                    let resultHTML = "";
+
+                    if (j.status === "completed") {
+                        resultHTML = `<br><b>Result:</b> ${j.result ?? "N/A"}`;
+                    }
+
                     return `
                         <div class="card" onclick="viewLogs('${id}')">
                             <b>Job ID:</b> ${id}<br>
                             <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
                             <b>Progress:</b> ${j.completed}/${j.total}
+                            ${resultHTML}
 
                             <div class="progress-bar">
                                 <div class="progress-fill" style="width:${percent}%"></div>
