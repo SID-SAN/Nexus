@@ -66,6 +66,12 @@ def hash_password(password: str):
     return hashlib.sha256(password.encode()).hexdigest()
         
 
+async def periodic_save():
+    while True:
+        await asyncio.sleep(3)  # 🔥 every 3 sec
+        save_jobs(jobs)
+
+
 # -----------------------------
 # SAFE SEND
 # -----------------------------
@@ -199,6 +205,7 @@ def apply_reducer(results, reducer):
 async def startup():
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(monitor_jobs())
+    asyncio.create_task(periodic_save())
 
 
 # -----------------------------
@@ -450,9 +457,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 if len(job["results"]) == job["chunks"]:
                     job["status"] = "completed"
-
-                async def save_async():
-                    save_jobs(jobs)
 
                 asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
 
