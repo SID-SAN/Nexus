@@ -451,7 +451,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if len(job["results"]) == job["chunks"]:
                     job["status"] = "completed"
 
-                save_jobs(jobs)
+                async def save_async():
+                    save_jobs(jobs)
+
+                asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
 
     except WebSocketDisconnect:
         print(f"Node disconnected: {node_id}")
