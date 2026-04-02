@@ -282,7 +282,6 @@ async def submit_job(
         "status_map": {},
         "assigned_at": {},
         "retries": {},
-        "completed": 0,
         "status": "running",
         "reducer": reducer,
         "price": price,
@@ -418,7 +417,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["logs"][chunk] = payload.get("logs", "")
                 job["errors"][chunk] = payload.get("error", "")
                 job["status_map"][chunk] = "completed"
-                job["completed"] += 1
                 job["updated_at"] = time.time()
 
                 # 🔥 CREDIT REWARD LOGIC
@@ -450,7 +448,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         print("⚠️ No price set for job, skipping reward")
                 
 
-                if job["completed"] == job["chunks"]:
+                if len(job["results"]) == job["chunks"]:
                     job["status"] = "completed"
 
                 save_jobs(jobs)
@@ -471,9 +469,11 @@ def job_status(job_id: str):
     if not job:
         return {"error": "not found"}
 
+    completed = len(job["results"])
+
     return {
         "status": job["status"],
-        "completed": job["completed"],
+        "completed": completed,
         "total": job["chunks"]
     }
 
@@ -493,7 +493,7 @@ def all_jobs():
     for jid, job in jobs.items():
         out[jid] = {
             "status": job["status"],
-            "completed": job["completed"],
+            "completed": len(job["results"]),
             "total": job["chunks"],
             "result": apply_reducer(job["results"], job["reducer"]) if job["status"] == "completed" else None
         }
