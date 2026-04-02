@@ -17,6 +17,8 @@ RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
 websocket_connection = None
 pending_results = {}
 job_cache = {}
+active_chunks = 0
+request_in_flight = False
 
 send_queue = asyncio.Queue()
 work_loop_started = False
@@ -30,7 +32,7 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
 
 async def run_single_chunk(job_id, chunk, total_chunks):
 
-    global websocket_connection
+    global websocket_connection, active_chunks
 
     async with semaphore:
 
@@ -59,12 +61,15 @@ async def run_single_chunk(job_id, chunk, total_chunks):
         print("[Node] Queued result:", response)
 
         print(f"[V4] Submitted chunk {chunk}")
+        active_chunks -= 1
 
 
 async def execute_chunk_batch(job_id, chunks, total_chunks):
 
     try:
-        # check cancellation
+        global active_chunks
+        active_chunks += len(chunks)
+
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{RELAY_HTTP_URL}/job_status/{job_id}") as resp:
 
@@ -116,7 +121,6 @@ async def sender_loop():
         message = await send_queue.get()
 
         if websocket_connection is None:
-            print("[Sender] No connection, retrying...")
             await asyncio.sleep(1)
             await send_queue.put(message)
             continue
@@ -134,6 +138,7 @@ async def sender_loop():
 # -----------------------------
 async def connect_to_relay():
 
+    global request_in_flight
     global websocket_connection
     global work_loop_started
 
@@ -148,6 +153,7 @@ async def connect_to_relay():
 
                 websocket_connection = websocket
                 print(f"[Relay] Connected as {NODE_ID}")
+                connect_to_relay.retry_count = 0
 
                 if not work_loop_started:
                     asyncio.create_task(request_work_loop())
@@ -165,6 +171,7 @@ async def connect_to_relay():
                     # SINGLE CHUNK
                     # -----------------------------
                     if msg_type == "assign_chunk":
+                        request_in_flight = False
 
                         payload = data["payload"]
                         job_id = payload["job_id"]
@@ -181,6 +188,7 @@ async def connect_to_relay():
                     # BATCH CHUNKS
                     # -----------------------------
                     elif msg_type == "assign_chunk_batch":
+                        request_in_flight = False
 
                         payload = data["payload"]
                         job_id = payload["job_id"]
@@ -240,10 +248,19 @@ async def connect_to_relay():
         except Exception as e:
 
             if websocket_connection is not None:
-                print(f"[Relay] Connection lost. Reconnecting... {e}")
+                print(f"[Relay] Connection lost: {e}")
 
             websocket_connection = None
-            await asyncio.sleep(3)
+
+            if not hasattr(connect_to_relay, "retry_count"):
+                connect_to_relay.retry_count = 0
+
+            connect_to_relay.retry_count += 1
+            wait_time = min(10, 2 ** connect_to_relay.retry_count)
+
+            print(f"[Relay] Reconnecting in {wait_time}s...")
+
+            await asyncio.sleep(wait_time)
 
 
 # -----------------------------
@@ -259,20 +276,28 @@ async def request_work_loop():
             await asyncio.sleep(2)
             continue
 
-        request = {
-            "type": "request_chunk",
-            "source": NODE_ID
-        }
+        global request_in_flight
 
-        try:
-            await send_queue.put(request)
-        except:
-            pass
+        if active_chunks < MAX_CONCURRENT_CHUNKS and not request_in_flight:
 
-        # adaptive backoff
-        if idle_counter < 5:
-            await asyncio.sleep(2)
-        else:
-            await asyncio.sleep(5)
+            request = {
+                "type": "request_chunk",
+                "source": NODE_ID
+            }
 
-        idle_counter += 1
+            try:
+                await send_queue.put(request)
+                request_in_flight = True
+
+                async def unlock_request():
+                    await asyncio.sleep(5)
+                    global request_in_flight
+                    request_in_flight = False
+
+                asyncio.create_task(unlock_request())
+
+            except:
+                pass
+
+        sleep_time = 2 if active_chunks == 0 else 4
+        await asyncio.sleep(sleep_time)
