@@ -510,8 +510,19 @@ def all_jobs():
 
 @app.post("/cancel_job/{job_id}")
 def cancel_job(job_id: str):
-    if job_id in jobs:
-        jobs[job_id]["status"] = "cancelled"
+    job = jobs.get(job_id)
+
+    if not job:
+        return {"error": "not found"}
+
+    job["status"] = "cancelled"
+
+    job["queue"] = []
+
+    for chunk, status in job["status_map"].items():
+        if status == "running":
+            job["status_map"][chunk] = "cancelled"
+
     return {"status": "cancelled"}
 
 
@@ -895,15 +906,23 @@ def dashboard():
                     }
 
                     return `
-                        <div class="card" onclick="viewLogs('${id}')">
-                            <b>Job ID:</b> ${id}<br>
-                            <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
-                            <b>Progress:</b> ${j.completed}/${j.total}
-                            ${resultHTML}
+                        <div class="card">
+                            <div onclick="viewLogs('${id}')">
+                                <b>Job ID:</b> ${id}<br>
+                                <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
+                                <b>Progress:</b> ${j.completed}/${j.total}
+                                ${resultHTML}
 
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width:${percent}%"></div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width:${percent}%"></div>
+                                </div>
                             </div>
+
+                            ${
+                                j.status === "running"
+                                ? `<button onclick="cancelJob('${id}')" style="margin-top:10px; background:#ef4444;">Cancel</button>`
+                                : ""
+                            }
                         </div>
                     `;
                 }).join('');
@@ -1035,6 +1054,7 @@ def dashboard():
 
             <h2>📄 Job Logs</h2>
             <button onclick="closeLogs()">Close</button>
+            
 
             <div id="logContent" style="margin-top: 10px;"></div>
         </div>
