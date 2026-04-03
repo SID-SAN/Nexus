@@ -359,7 +359,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if job["status"] != "running" or not job["queue"]:
                         continue
 
-                    progress = job["completed"] / job["chunks"]
+                    completed = len(job.get("results", {}))
+                    progress = completed / job["chunks"]
 
                     if progress < best_score:
                         best_score = progress
