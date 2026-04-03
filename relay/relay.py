@@ -515,7 +515,31 @@ def cancel_job(job_id: str):
     if not job:
         return {"error": "not found"}
 
+    if job["status"] != "running":
+        return {"status": job["status"]}
+
     job["status"] = "cancelled"
+
+    completed = len(job["results"])
+    total = job["chunks"]
+    price = job.get("price", 0)
+
+    used = (completed / total) * price
+    refund = price - used
+
+    user_id = job.get("owner")
+
+    if user_id:
+        try:
+            user = get_user_by_id(user_id)
+            if user:
+                api_key = user["api_key"].strip()
+                new_credits = user["credits"] + refund
+
+                update_user_credits_by_api_key(api_key, new_credits)
+
+        except Exception as e:
+            print("Refund failed:", e)
 
     job["queue"] = []
 
@@ -523,7 +547,10 @@ def cancel_job(job_id: str):
         if status == "running":
             job["status_map"][chunk] = "cancelled"
 
-    return {"status": "cancelled"}
+    return {
+        "status": "cancelled",
+        "refund": refund
+    }
 
 
 @app.get("/job_logs/{job_id}")
