@@ -153,7 +153,25 @@ async def monitor_jobs():
                         job["status_map"][chunk] = "failed"
                         job["errors"][chunk] = "Max retries exceeded"
 
-        save_jobs(jobs)
+                        # 🔥 check if job should fail
+                        failed_chunks = [
+                            c for c, s in job["status_map"].items()
+                            if s == "failed"
+                        ]
+
+                        pending_chunks = [
+                            c for c in job["queue"]
+                        ]
+
+                        running_chunks = [
+                            c for c, s in job["status_map"].items()
+                            if s == "running"
+                        ]
+
+                        # if nothing left to process and failures exist → fail job
+                        if failed_chunks and not pending_chunks and not running_chunks:
+                            job["status"] = "failed"
+                            print(f"[Job Failed] {job_id}")
 
 
 # -----------------------------
@@ -361,7 +379,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                     progress = completed / total if total else 1
 
-                    size_penalty = (total ** 0.5) / 10
+                    size_penalty = (total ** 0.5) / 15
 
                     score = progress + size_penalty
                     score += random.uniform(0, 0.05)
@@ -456,10 +474,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                                 continue
                             
                             api_key = user["api_key"].strip()
-                            new_credits = user["credits"] + reward
 
                             print("DEBUG API KEY USED:", api_key)
-                            update_user_credits_by_api_key(api_key, new_credits)
+                            update_user_credits_by_api_key(api_key, user["credits"] + reward)
                             
                         except Exception as e:
                             print("❌ Credit update failed:", e)
