@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse
 import json
@@ -7,6 +6,7 @@ import uuid
 import asyncio
 import time
 import hashlib
+import random
 
 from relay.job_persistence import load_jobs, save_jobs
 
@@ -348,9 +348,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             elif msg_type == "request_chunk":
 
-                node_capacity = get_node_capacity(node_id)
-                batch_size = max(1, node_capacity // 20)
-
                 # pick job
                 best_job = None
                 best_score = float("inf")
@@ -359,17 +356,31 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if job["status"] != "running" or not job["queue"]:
                         continue
 
-                    completed = len(job.get("results", {}))
-                    progress = completed / job["chunks"]
+                    completed = len(job["results"])
+                    total = job["chunks"]
 
-                    if progress < best_score:
-                        best_score = progress
+                    progress = completed / total if total else 1
+
+                    size_penalty = (total ** 0.5) / 10
+
+                    score = progress + size_penalty
+                    score += random.uniform(0, 0.05)
+
+
+                    if score < best_score:
+                        best_score = score
                         best_job = (jid, job)
 
                 if not best_job:
-                    continue   # 🔥 FIX (NOT return)
+                    continue
 
                 jid, job = best_job
+
+                node_capacity = get_node_capacity(node_id)
+                batch_size = min(
+                    max(1, node_capacity // 20),
+                    len(job["queue"])
+                    )
 
                 assigned = []
 
