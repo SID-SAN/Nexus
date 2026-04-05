@@ -64,6 +64,20 @@ def update_user_credits_by_api_key(api_key, new_credits):
 
 def hash_password(password: str):
     return hashlib.sha256(password.encode()).hexdigest()
+
+def get_user_load(user_id):
+    load = 0
+
+    for job in jobs.values():
+        if job.get("owner") != user_id:
+            continue
+
+        # count running chunks
+        for status in job["status_map"].values():
+            if status == "running":
+                load += 1
+
+    return load
         
 
 async def periodic_save():
@@ -366,13 +380,17 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             elif msg_type == "request_chunk":
 
-                # pick job
                 best_job = None
                 best_score = float("inf")
 
                 for jid, job in jobs.items():
+
                     if job["status"] != "running" or not job["queue"]:
                         continue
+
+                    owner = job.get("owner")
+
+                    user_load = get_user_load(owner)
 
                     completed = len(job["results"])
                     total = job["chunks"]
@@ -381,9 +399,12 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                     size_penalty = (total ** 0.5) / 15
 
-                    score = progress + size_penalty
-                    score += random.uniform(0, 0.05)
+                    # 🔥 NEW: fairness penalty
+                    fairness_penalty = user_load * 0.1
 
+                    score = progress + size_penalty + fairness_penalty
+
+                    score += random.uniform(0, 0.05)
 
                     if score < best_score:
                         best_score = score
