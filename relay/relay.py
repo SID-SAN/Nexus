@@ -547,13 +547,29 @@ def job_result(job_id: str):
 @app.get("/all_jobs")
 def all_jobs():
     out = {}
+
+    now = time.time()
+
     for jid, job in jobs.items():
+
+        completed = len(job["results"])
+        total = job["chunks"]
+
+        duration = int(now - job.get("created_at", now))
+
+        speed = 0
+        if duration > 0:
+            speed = round(completed / duration, 2)
+
         out[jid] = {
             "status": job["status"],
-            "completed": len(job["results"]),
-            "total": job["chunks"],
-            "result": apply_reducer(job["results"], job["reducer"]) if job["status"] == "completed" else None
+            "completed": completed,
+            "total": total,
+            "result": apply_reducer(job["results"], job["reducer"]) if job["status"] == "completed" else None,
+            "duration": duration,
+            "speed": speed
         }
+
     return out
 
 
@@ -986,7 +1002,8 @@ def dashboard():
                             <div onclick="viewLogs('${id}')">
                                 <b>Job ID:</b> ${id}<br>
                                 <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
-                                <b>Progress:</b> ${j.completed}/${j.total}
+                                <b>Progress:</b> ${j.completed}/${j.total} (${percent}%)<br>
+                                ⏱ ${j.duration}s | ⚡ ${j.speed} chunks/s                                
                                 ${resultHTML}
 
                                 <div class="progress-bar">
