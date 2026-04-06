@@ -185,6 +185,7 @@ async def monitor_jobs():
                         # if nothing left to process and failures exist → fail job
                         if failed_chunks and not pending_chunks and not running_chunks:
                             job["status"] = "failed"
+                            job["completed_at"] = time.time()
                             print(f"[Job Failed] {job_id}")
 
 
@@ -507,6 +508,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 if len(job["results"]) == job["chunks"]:
                     job["status"] = "completed"
+                    job["completed_at"] = time.time()
 
                 asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
 
@@ -555,11 +557,14 @@ def all_jobs():
         completed = len(job["results"])
         total = job["chunks"]
 
-        duration = int(now - job.get("created_at", now))
+        end_time = job.get("completed_at", now)
+        duration = int(end_time - job.get("created_at", now))
 
         speed = 0
         if duration > 0:
             speed = round(completed / duration, 2)
+        else:
+            speed = completed
 
         out[jid] = {
             "status": job["status"],
@@ -584,6 +589,7 @@ def cancel_job(job_id: str):
         return {"status": job["status"]}
 
     job["status"] = "cancelled"
+    job["completed_at"] = time.time()
 
     completed = len(job["results"])
     total = job["chunks"]
