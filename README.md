@@ -1,55 +1,89 @@
-#  Nexus v4.1.0
+# Nexus v4.2.0
 
-### Distributed Compute Network with Credit Economy
+### Distributed Compute Platform with Credit Economy & Intelligent Scheduling
 
 Nexus is a lightweight distributed computing framework that enables multiple machines (nodes) to collaboratively execute computational tasks over the internet.
 
-With **v4.1.0**, Nexus evolves into a **multi-user, credit-based distributed compute platform**, where users can submit jobs and nodes earn credits by executing them.
+With **v4.2.0**, Nexus evolves into a **reliable, user-aware compute platform** with improved scheduling, job lifecycle management, and enhanced execution visibility.
 
 ---
 
-# Key Highlights (v4.1.0)
+# Key Highlights (v4.2.0)
 
-### Distributed Execution Engine
+## Distributed Execution Engine
 
 * Parallel task execution across multiple nodes
 * Map-Reduce inspired architecture
 * Automatic chunking & aggregation
 
-### Internet-Ready Network
+---
+
+## Internet-Ready Network
 
 * Nodes connect from different machines/networks
 * Central relay for coordination
 * WebSocket-based communication
 
-### Credit-Based Economy (NEW)
+---
+
+## Credit-Based Economy
 
 * Users pay credits to submit jobs
-* Nodes earn credits for executing tasks
+* Nodes earn credits per completed chunk
+* Automatic refund on job cancellation
 * Real-time credit tracking via dashboard
 
-### User System (NEW)
+---
+
+## Multi-User System
 
 * Email + password login
-* API key-based authentication (internal)
-* Multi-user support
+* API key-based authentication
+* Multiple users supported simultaneously
 
-### Adaptive Scheduling
+---
 
-* Nodes receive work based on availability
-* Batch chunk assignment reduces overhead
+## Smarter Scheduling
 
-### Real-Time Dashboard
+* Progress-aware job selection
+* Size-aware prioritization (faster completion of small jobs)
+* Randomized scoring to prevent job starvation
+* Adaptive batch allocation based on node capacity
+
+---
+
+## Job Lifecycle Management
+
+* Cancel running jobs anytime
+* Automatic refund for unused work
+* Failed job detection (after retry exhaustion)
+* Clean job termination (no stuck jobs)
+
+---
+
+## Execution Insights
+
+* Real-time progress tracking
+* Job duration tracking (accurate lifecycle timing)
+* Execution speed (chunks/sec)
+* Per-chunk logs and error visibility
+
+---
+
+## Real-Time Dashboard
 
 * Submit jobs via web UI
 * Monitor nodes & cluster
 * Track job progress and logs
 * View credit balance
 
-### Executable Node (NEW)
+---
+
+## Executable Node
 
 * Run nodes using `.exe` (no Python required)
 * Simple CLI interface
+* Easy deployment across machines
 
 ---
 
@@ -64,7 +98,7 @@ Central coordinator for the network.
 * Accept job submissions
 * Split jobs into chunks
 * Assign work to nodes
-* Track node health & resources
+* Track execution state
 * Aggregate results
 * Manage user credits
 
@@ -100,7 +134,10 @@ User interface for interacting with the system.
 # Execution Flow
 
 1. User logs in
-2. User uploads `job.zip`
+2. User uploads `job.zip` at
+   ```
+   https://nexus-relay-5wog.onrender.com/dashboard
+   ```
 3. Relay:
 
    * deducts credits
@@ -185,16 +222,6 @@ python nexus_node.py start --node-id PC_1 --api-key YOUR_API_KEY
 
 ---
 
-# Dashboard Features
-
-* Submit jobs
-* View nodes
-* Track job progress
-* View logs per chunk
-* Monitor credits
-
----
-
 # Project Structure
 
 ```
@@ -220,12 +247,12 @@ Nexus/
 
 # Roadmap
 
-* Secure authentication (bcrypt, JWT)
+* CLI improvements & config system
+* Better packaging & distribution
 * Real-time updates (remove polling)
-* Smarter scheduling (ML-based)
 * Multi-relay architecture
-* Distributed storage layer
 * GPU compute support
+* Distributed storage layer
 
 ---
 
@@ -248,6 +275,6 @@ Contributions are welcome!
 
 # Final Note
 
-Nexus v4.1.0 transforms the system from a distributed executor into a **compute marketplace with real incentives**.
+Nexus v4.2.0 transforms the system into a **reliable distributed compute platform** with intelligent scheduling, proper lifecycle control, and real economic incentives.
 
-If you found this interesting, consider starring the repo!
+If you found this interesting, consider ⭐ starring the repo!
