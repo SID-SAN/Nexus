@@ -11,8 +11,8 @@ import aiohttp
 
 API_KEY = os.getenv("API_KEY")
 
-RELAY_URL = f"wss://nexus-relay-5wog.onrender.com/ws/{NODE_ID}?api_key={API_KEY}"
-RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
+RELAY_URL = f"wss://nexus-wr6s.onrender.com/ws/{NODE_ID}?api_key={API_KEY}"
+RELAY_HTTP_URL = "https://nexus-wr6s.onrender.com"
 
 websocket_connection = None
 pending_results = {}
