@@ -136,7 +136,7 @@ User interface for interacting with the system.
 1. User logs in
 2. User uploads `job.zip` at
    ```
-   https://nexus-wr6s.onrender.com/dashboard
+   https://nexus-relay-5wog.onrender.com/dashboard
    ```
 3. Relay:
 

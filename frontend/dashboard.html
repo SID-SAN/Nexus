@@ -1,0 +1,460 @@
+<html>
+    <head>
+        <title>Nexus Dashboard</title>
+
+        <style>
+            body {
+                font-family: Arial;
+                background: #0f172a;
+                color: white;
+                margin: 0;
+                padding: 20px;
+            }
+
+            h1 { color: #38bdf8; }
+
+            .grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 20px;
+            }
+
+            .card {
+                background: #1e293b;
+                padding: 15px;
+                border-radius: 12px;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            }
+
+            input, select {
+                padding: 8px;
+                width: 100%;
+                margin-top: 5px;
+                border-radius: 6px;
+                border: none;
+            }
+
+            button {
+                padding: 10px;
+                background: #38bdf8;
+                border: none;
+                border-radius: 8px;
+                cursor: pointer;
+                margin-top: 10px;
+                width: 100%;
+            }
+
+            .status-running { color: #facc15; }
+            .status-completed { color: #22c55e; }
+            .status-failed { color: #ef4444; }
+            .status-cancelled { color: #94a3b8; }
+
+            .progress-bar {
+                width: 100%;
+                background: #334155;
+                border-radius: 8px;
+                overflow: hidden;
+                margin-top: 10px;
+            }
+
+            .progress-fill {
+                height: 10px;
+                background: #38bdf8;
+                width: 0%;
+            }
+        </style>
+
+    </head>
+
+    <body>
+
+        <h1>⚡ Nexus Cluster Dashboard</h1>
+
+        <h2>🔐 Login</h2>
+        <div class="card">
+            <input type="text" id="email" placeholder="Email"><br><br>
+            <input type="password" id="password" placeholder="Password"><br><br>
+
+            <button onclick="login()">Login</button>
+            <button onclick="createUser()">Create New User</button>
+            <p id="loginStatus"></p>
+            <p id="newUser"></p>
+            <p id="userCredits"></p>
+        </div>
+
+        <!-- JOB SUBMISSION -->
+        <h2>🚀 Submit Job</h2>
+
+        <div class="card">
+            <input type="file" id="file"><br><br>
+
+            <input type="number" id="chunks" placeholder="Auto"><br><br>
+
+            <select id="reducer">
+                <option value="sum">sum</option>
+                <option value="avg">avg</option>
+                <option value="max">max</option>
+                <option value="min">min</option>
+                <option value="list">list</option>
+            </select><br><br>
+
+            <button onclick="submitJob()">Submit Job</button>
+
+            <p id="submitStatus"></p>
+
+        </div>
+
+        <!-- NODES -->
+        <h2>🖥️ Nodes</h2>
+        <div id="nodes" class="grid"></div>
+
+        <!-- JOBS -->
+        <h2>📦 Jobs</h2>
+        <div id="jobs" class="grid"></div>
+
+        <script>
+
+        let logInterval = null;
+        let currentJobId = null;
+
+        async function viewLogs(job_id) {
+
+            document.getElementById("logPanel").style.display = "block";
+
+            currentJobId = job_id;
+
+            // clear previous loop if any
+            if (logInterval) {
+                clearInterval(logInterval);
+            }
+
+            async function fetchLogs() {
+
+                const res = await fetch(`/job_logs/${job_id}`);
+                const data = await res.json();
+
+                let html = "";
+
+                for (let chunk in data.logs) {
+
+                    html += `
+                        <div style="margin-bottom:10px; padding:10px; background:#1e293b; border-radius:8px;">
+                            <b>Chunk ${chunk}</b><br>
+                            <pre>${data.logs[chunk] || "No logs"}</pre>
+                            <pre style="color:red;">${data.errors[chunk] || ""}</pre>
+                        </div>
+                    `;
+                }
+
+                document.getElementById("logContent").innerHTML = html;
+            }
+
+            // run immediately
+            fetchLogs();
+
+            // 🔥 live update every 1 sec
+            logInterval = setInterval(fetchLogs, 1000);
+        }
+
+
+        function closeLogs() {
+
+            document.getElementById("logPanel").style.display = "none";
+
+            if (logInterval) {
+                clearInterval(logInterval);
+                logInterval = null;
+            }
+        }       
+
+        async function submitJob() {
+
+            const file = document.getElementById("file").files[0];
+
+            let chunks = document.getElementById("chunks").value;
+            if (!chunks) {
+                chunks = null;}        
+
+            const reducer = document.getElementById("reducer").value;
+
+            if (!file) {
+                alert("Please upload a file");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("file", file);
+
+            if (chunks !== null) {
+                formData.append("chunks", chunks);
+            }            
+
+            formData.append("reducer", reducer);
+
+            const apiKey = localStorage.getItem("api_key");  
+
+            if (!apiKey) {
+                alert("Please login first");
+                return;
+            }
+
+
+            formData.append("api_key", apiKey); 
+
+            formData.append("price", 100);
+
+            const res = await fetch('/submit_job', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await res.json();
+
+            document.getElementById("submitStatus").innerText =
+                "Job submitted: " + data.job_id +  " | Chunks: " + data.chunks;
+
+            trackJob(data.job_id);
+        }
+
+        
+        async function cancelJob(job_id) {
+
+            if (!confirm("Are you sure you want to cancel this job?")) {
+                return;
+            }
+
+            const res = await fetch(`/cancel_job/${job_id}`, {
+                method: "POST"
+            });
+
+            const data = await res.json();
+
+            alert("Job cancelled: " + job_id);
+        }
+
+
+        async function trackJob(job_id) {
+
+            let interval = setInterval(async () => {
+
+                const status = await fetch(`/job_status/${job_id}`).then(r => r.json());
+
+                if (status.status === "completed") {
+
+                    clearInterval(interval);
+
+                    const result = await fetch(`/job_result/${job_id}`).then(r => r.json());
+
+                }
+
+                if (status.status === "failed") {
+
+                    clearInterval(interval);
+
+                    const logs = await fetch(`/job_logs/${job_id}`).then(r => r.json());
+
+                    alert("❌ Job Failed!\\nErrors: " + JSON.stringify(logs.errors));
+                }
+
+            }, 2000);
+        }
+
+
+        let fetchingData = false;
+
+        async function fetchData() {
+
+            if (fetchingData) return;
+            fetchingData = true;
+
+            try {
+
+                const nodesRes = await fetch('/cluster_status');
+                const jobsRes = await fetch('/all_jobs');
+
+                if (!nodesRes.ok || !jobsRes.ok) {
+                    throw new Error("API failed");
+                }
+
+                const nodes = await nodesRes.json();
+                const jobs = await jobsRes.json();
+
+                const nodeHTML = (nodes.connected_nodes || []).map(n => `
+                    <div class="card">
+                        <b>Node:</b> ${n}
+                    </div>
+                `).join('');
+
+                document.getElementById("nodes").innerHTML = nodeHTML;
+
+                const jobHTML = Object.entries(jobs || {}).map(([id, j]) => {
+
+                    let percent = j.total ? Math.floor((j.completed / j.total) * 100) : 0;
+
+                    let statusClass = "status-running";
+                    if (j.status === "completed") statusClass = "status-completed";
+                    if (j.status === "failed") statusClass = "status-failed";
+                    if (j.status === "cancelled") statusClass = "status-cancelled";
+
+                    let resultHTML = "";
+
+                    if (j.status === "completed") {
+                        resultHTML = `<br><b>Result:</b> ${j.result ?? "N/A"}`;
+                    }
+
+                    return `
+                        <div class="card">
+                            <div onclick="viewLogs('${id}')">
+                                <b>Job ID:</b> ${id}<br>
+                                <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
+                                <b>Progress:</b> ${j.completed}/${j.total} (${percent}%)<br>
+                                ⏱ ${j.duration}s | ⚡ ${j.speed} chunks/s                                
+                                ${resultHTML}
+
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width:${percent}%"></div>
+                                </div>
+                            </div>
+
+                            ${
+                                j.status === "running"
+                                ? `<button onclick="cancelJob('${id}')" style="margin-top:10px; background:#ef4444;">Cancel</button>`
+                                : ""
+                            }
+                        </div>
+                    `;
+                }).join('');
+
+                document.getElementById("jobs").innerHTML = jobHTML;
+
+            } catch (e) {
+                console.log("fetchData failed:", e);
+            }
+
+            // 🔥 ALWAYS RESET (CRITICAL)
+            fetchingData = false;
+        }
+
+        async function createUser() {
+
+            const email = document.getElementById("email").value;
+            const password = document.getElementById("password").value;
+
+            if (!email || !password) {
+                alert("Enter email and password");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("email", email);
+            formData.append("password", password);
+
+            const res = await fetch('/create_user', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await res.json();
+
+            document.getElementById("newUser").innerHTML =
+                `User: ${data.user_id}<br>
+                API Key: <b>${data.api_key}</b>`;
+        }
+
+        let fetchingCredits = false;
+
+        async function fetchCredits() {
+
+            if (fetchingCredits) return;
+            fetchingCredits = true;
+
+            try {
+                const apiKey = localStorage.getItem("api_key");
+                if (!apiKey) {
+                    fetchingCredits = false;
+                    return;
+                }
+
+                const res = await fetch(`/user/${apiKey}`);
+                if (!res.ok) {
+                    fetchingCredits = false;
+                    return;
+                }
+
+                const data = await res.json();
+
+                if (data.credits !== undefined) {
+                    document.getElementById("userCredits").innerText =
+                        "Credits: " + data.credits;
+                }
+
+            } catch (e) {
+                console.log("fetchCredits failed");
+            }
+
+            fetchingCredits = false;
+        }
+
+        function copyKey(key) {
+            navigator.clipboard.writeText(key);
+            alert("API Key copied!");
+        }
+
+        async function login() {
+
+            const email = document.getElementById("email").value;
+            const password = document.getElementById("password").value;
+
+            const formData = new FormData();
+            formData.append("email", email);
+            formData.append("password", password);
+
+            const res = await fetch('/login', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await res.json();
+
+            if (data.error) {
+                document.getElementById("loginStatus").innerText = "❌ Login failed";
+                return;
+            }
+
+            // 🔥 STORE API KEY
+            localStorage.setItem("api_key", data.api_key);
+
+            document.getElementById("loginStatus").innerHTML =
+                `✅ Logged in as ${data.user_id}<br>
+                🔑 API Key: <b>${data.api_key}</b>
+                <button onclick="copyKey('${data.api_key}')">Copy</button>`;
+        }
+
+        setInterval(fetchCredits, 5000);
+
+        setInterval(fetchData, 5000);
+        fetchData();
+
+        </script>
+        <!-- LOG PANEL -->
+        <div id="logPanel" style="
+            position: fixed;
+            right: 0;
+            top: 0;
+            width: 400px;
+            height: 100%;
+            background: #020617;
+            padding: 15px;
+            overflow-y: auto;
+            display: none;
+            border-left: 2px solid #38bdf8;
+        ">
+
+            <h2>📄 Job Logs</h2>
+            <button onclick="closeLogs()">Close</button>
+            
+
+            <div id="logContent" style="margin-top: 10px;"></div>
+        </div>
+    </body>
+    </html>

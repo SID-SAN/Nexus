@@ -4,7 +4,7 @@ import requests
 import zipfile
 import os
 
-RELAY_URL = "https://nexus-wr6s.onrender.com"
+RELAY_URL = "https://nexus-relay-5wog.onrender.com"
 
 JOB_DIR = "jobs"
 

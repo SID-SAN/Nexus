@@ -51,7 +51,7 @@ def cluster_dashboard():
     # get resources from relay
     try:
         resources = requests.get(
-            "https://nexus-wr6s.onrender.com/resources",
+            "https://nexus-relay-5wog.onrender.com/resources",
             timeout=3
         ).json()
     except:
