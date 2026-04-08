@@ -701,4 +701,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @app.get("/dashboard")
 def dashboard():
-    return FileResponse(os.path.join(BASE_DIR, "frontend/dashboard.html"))
+    file_path = os.path.join(BASE_DIR, "frontend", "dashboard.html")
+
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}"}
+
+    return FileResponse(file_path)
