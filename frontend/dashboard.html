@@ -129,6 +129,21 @@
     </div>
     </div>
 
+    <div id="logPanel"
+        style="display:none; position:fixed; top:0; right:0; width:400px; height:100%;
+                background:#0f172a; border-left:1px solid #334155; padding:15px; overflow:auto; z-index:1000;">
+
+        <button onclick="closeLogs()"
+                style="background:red; padding:5px 10px; margin-bottom:10px;">
+            Close
+        </button>
+
+        <h3>Logs</h3>
+
+        <div id="logContent"></div>
+
+    </div>
+
 <script>
         const BASE_URL = window.location.origin;        let logInterval = null;
         let currentJobId = null;
