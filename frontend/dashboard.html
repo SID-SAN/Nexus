@@ -1,6 +1,8 @@
 <html>
     <head>
         <title>Nexus Dashboard</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        
 
         <style>
             body {
@@ -65,55 +67,70 @@
         </style>
 
     </head>
+    <body class="bg-slate-900 text-white">
 
-    <body>
+    <div class="flex">
 
-        <h1>⚡ Nexus Cluster Dashboard</h1>
+    <!-- Sidebar -->
 
-        <h2>🔐 Login</h2>
-        <div class="card">
-            <input type="text" id="email" placeholder="Email"><br><br>
-            <input type="password" id="password" placeholder="Password"><br><br>
+    <div class="w-64 h-screen bg-slate-800 p-5 fixed">
+        <h1 class="text-2xl font-bold text-blue-400 mb-8">⚡ Nexus</h1>
 
-            <button onclick="login()">Login</button>
-            <button onclick="createUser()">Create New User</button>
-            <p id="loginStatus"></p>
-            <p id="newUser"></p>
-            <p id="userCredits"></p>
-        </div>
+    <ul class="space-y-4">
+    <li>Dashboard</li>
+    <li>Jobs</li>
+    <li>Nodes</li>
+    </ul>
 
-        <!-- JOB SUBMISSION -->
-        <h2>🚀 Submit Job</h2>
+    </div>
 
-        <div class="card">
-            <input type="file" id="file"><br><br>
+    <!-- Main Content -->
 
-            <input type="number" id="chunks" placeholder="Auto"><br><br>
+    <div class="ml-64 p-6 w-full">
 
-            <select id="reducer">
-                <option value="sum">sum</option>
-                <option value="avg">avg</option>
-                <option value="max">max</option>
-                <option value="min">min</option>
-                <option value="list">list</option>
-            </select><br><br>
+    <!-- Login -->
+    <div class="bg-slate-800 p-5 rounded-xl mb-6">
+    <h2>Login</h2>
 
-            <button onclick="submitJob()">Submit Job</button>
+    <input type="text" id="email" placeholder="Email" class="w-full mb-2 text-black">
+    <input type="password" id="password" placeholder="Password" class="w-full mb-2 text-black">
 
-            <p id="submitStatus"></p>
+    <button onclick="login()">Login</button>
+    <button onclick="createUser()">Create User</button>
 
-        </div>
+    <p id="loginStatus"></p>
+    <p id="newUser"></p>
+    <p id="userCredits"></p>
+    </div>
 
-        <!-- NODES -->
-        <h2>🖥️ Nodes</h2>
-        <div id="nodes" class="grid"></div>
+    <!-- Submit -->
+    <div class="bg-slate-800 p-5 rounded-xl mb-6">
+    <h2>Submit Job</h2>
 
-        <!-- JOBS -->
-        <h2>📦 Jobs</h2>
-        <div id="jobs" class="grid"></div>
+    <input type="file" id="file" class="mb-2 text-black">
+    <input type="number" id="chunks" class="mb-2 text-black">
 
-        <script>
+    <select id="reducer" class="mb-2 text-black">
+        <option value="sum">sum</option>
+        <option value="avg">avg</option>
+    </select>
 
+    <button onclick="submitJob()">Submit</button>
+    <p id="submitStatus"></p>
+    </div>
+
+    <!-- Nodes -->
+    <h2>Nodes</h2>
+    <div id="nodes"></div>
+
+    <!-- Jobs -->
+    <h2>Jobs</h2>
+    <div id="jobs" class="grid grid-cols-2 gap-4"></div>
+    </div>
+    </div>
+
+<script>
+        const BASE_URL = "http://127.0.0.1:8000";
         let logInterval = null;
         let currentJobId = null;
 
@@ -130,7 +147,7 @@
 
             async function fetchLogs() {
 
-                const res = await fetch(`/job_logs/${job_id}`);
+                const res = await fetch(BASE_URL + `/job_logs/${job_id}`);
                 const data = await res.json();
 
                 let html = "";
@@ -203,7 +220,7 @@
 
             formData.append("price", 100);
 
-            const res = await fetch('/submit_job', {
+            const res = await fetch(BASE_URL + '/submit_job', {
                 method: 'POST',
                 body: formData
             });
@@ -223,7 +240,7 @@
                 return;
             }
 
-            const res = await fetch(`/cancel_job/${job_id}`, {
+            const res = await fetch(BASE_URL + `/cancel_job/${job_id}`, {
                 method: "POST"
             });
 
@@ -237,13 +254,13 @@
 
             let interval = setInterval(async () => {
 
-                const status = await fetch(`/job_status/${job_id}`).then(r => r.json());
+                const status = await fetch(BASE_URL + `/job_status/${job_id}`).then(r => r.json());
 
                 if (status.status === "completed") {
 
                     clearInterval(interval);
 
-                    const result = await fetch(`/job_result/${job_id}`).then(r => r.json());
+                    const result = await fetch(BASE_URL + `/job_result/${job_id}`).then(r => r.json());
 
                 }
 
@@ -269,8 +286,8 @@
 
             try {
 
-                const nodesRes = await fetch('/cluster_status');
-                const jobsRes = await fetch('/all_jobs');
+                const nodesRes = await fetch(BASE_URL +'/cluster_status');
+                const jobsRes = await fetch(BASE_URL +'/all_jobs');
 
                 if (!nodesRes.ok || !jobsRes.ok) {
                     throw new Error("API failed");
@@ -303,25 +320,45 @@
                     }
 
                     return `
-                        <div class="card">
-                            <div onclick="viewLogs('${id}')">
-                                <b>Job ID:</b> ${id}<br>
-                                <b>Status:</b> <span class="${statusClass}">${j.status}</span><br>
-                                <b>Progress:</b> ${j.completed}/${j.total} (${percent}%)<br>
-                                ⏱ ${j.duration}s | ⚡ ${j.speed} chunks/s                                
-                                ${resultHTML}
+                    <div class="bg-slate-800 p-4 rounded-xl hover:bg-slate-700 transition">
 
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width:${percent}%"></div>
-                                </div>
-                            </div>
+                    <div onclick="viewLogs('${id}')">
 
-                            ${
-                                j.status === "running"
-                                ? `<button onclick="cancelJob('${id}')" style="margin-top:10px; background:#ef4444;">Cancel</button>`
-                                : ""
-                            }
+                        <div class="flex justify-between">
+                        <span class="text-sm text-slate-400">${id.slice(0,8)}</span>
+                        <span class="${
+                            j.status === "completed" ? "text-green-400" :
+                            j.status === "failed" ? "text-red-400" :
+                            j.status === "cancelled" ? "text-gray-400" :
+                            "text-yellow-400"
+                        }">${j.status}</span>
                         </div>
+
+                        <div class="mt-2 text-sm">
+                        ${j.completed}/${j.total} chunks
+                        </div>
+
+                        <div class="w-full bg-slate-700 rounded mt-2">
+                        <div class="bg-blue-400 h-2 rounded"
+                            style="width:${percent}%"></div>
+                        </div>
+
+                        <div class="mt-2 text-xs text-slate-400">
+                        ⏱ ${j.duration}s | ⚡ ${j.speed} chunks/s
+                        </div>
+
+                    </div>
+
+                    ${
+                        j.status === "running"
+                        ? `<button onclick="cancelJob('${id}')"
+                            class="mt-3 bg-red-500 hover:bg-red-600 px-3 py-1 rounded w-full">
+                            Cancel
+                        </button>`
+                        : ""
+                    }
+
+                    </div>
                     `;
                 }).join('');
 
@@ -349,7 +386,7 @@
             formData.append("email", email);
             formData.append("password", password);
 
-            const res = await fetch('/create_user', {
+            const res = await fetch(BASE_URL + '/create_user', {
                 method: 'POST',
                 body: formData
             });
@@ -375,7 +412,7 @@
                     return;
                 }
 
-                const res = await fetch(`/user/${apiKey}`);
+                const res = await fetch(BASE_URL + `/user/${apiKey}`);
                 if (!res.ok) {
                     fetchingCredits = false;
                     return;
@@ -409,7 +446,7 @@
             formData.append("email", email);
             formData.append("password", password);
 
-            const res = await fetch('/login', {
+            const res = await fetch(BASE_URL + '/login', {
                 method: 'POST',
                 body: formData
             });
@@ -436,25 +473,7 @@
         fetchData();
 
         </script>
-        <!-- LOG PANEL -->
-        <div id="logPanel" style="
-            position: fixed;
-            right: 0;
-            top: 0;
-            width: 400px;
-            height: 100%;
-            background: #020617;
-            padding: 15px;
-            overflow-y: auto;
-            display: none;
-            border-left: 2px solid #38bdf8;
-        ">
 
-            <h2>📄 Job Logs</h2>
-            <button onclick="closeLogs()">Close</button>
-            
-
-            <div id="logContent" style="margin-top: 10px;"></div>
-        </div>
     </body>
+
     </html>
