@@ -267,7 +267,7 @@
 
                     clearInterval(interval);
 
-                    const logs = await fetch(`/job_logs/${job_id}`).then(r => r.json());
+                    const logs = await fetch(BASE_URL + `/job_logs/${job_id}`).then(r => r.json());
 
                     alert("❌ Job Failed!\\nErrors: " + JSON.stringify(logs.errors));
                 }
