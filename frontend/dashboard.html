@@ -317,8 +317,6 @@ async function cancelJob(id) {
 function viewLogs(id) {
 
   document.getElementById("logPanel").classList.remove("hidden");
-  const panel = document.getElementById("logPanel");
-  panel.scrollTop = panel.scrollHeight;
 
   if (logInterval) clearInterval(logInterval);
 
@@ -327,28 +325,31 @@ function viewLogs(id) {
     const res = await fetch(BASE_URL + `/job_logs/${id}`);
     const data = await res.json();
 
+    console.log("LOG DATA:", data); // debug
+
     let html = "";
 
     const logs = data.logs || data;
 
     for (let c in logs) {
-    html += `
-    <pre style="
-        background:#020617;
-        padding:10px;
-        border-radius:6px;
-        color:#38bdf8;
-        font-size:12px;
-        margin-bottom:6px;
-    ">${logs[c]}</pre>
-    `;
+      html += `
+        <pre style="
+          background:#020617;
+          padding:10px;
+          border-radius:6px;
+          color:#38bdf8;
+          font-size:12px;
+          margin-bottom:6px;
+        ">${logs[c]}</pre>
+      `;
     }
 
     if (!html) {
-    html = "<p class='text-slate-400'>No logs yet...</p>";
+      html = "<p class='text-slate-400'>No logs yet...</p>";
     }
 
     document.getElementById("logContent").innerHTML = html;
+  }
 
   load();
   logInterval = setInterval(load, 1000);
@@ -406,6 +407,5 @@ setInterval(fetchCredits, 5000);
 fetchCredits();
 
 </script>
-
 </body>
 </html>
