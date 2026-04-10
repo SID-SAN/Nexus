@@ -172,6 +172,18 @@ async function fetchData() {
   updateStats(nodes, jobs);
 }
 
+async function fetchCredits() {
+
+  const apiKey = localStorage.getItem("api_key");
+  if (!apiKey) return;
+
+  const res = await fetch(BASE_URL + `/user/${apiKey}`);
+  const data = await res.json();
+
+  document.getElementById("credits").innerText =
+    data.credits ?? 0;
+}
+
 // Login
 async function login() {
 
@@ -317,21 +329,26 @@ function viewLogs(id) {
 
     let html = "";
 
-    for (let c in data.logs) {
-        html += `
-        <pre style="
+    const logs = data.logs || data;
+
+    for (let c in logs) {
+    html += `
+    <pre style="
         background:#020617;
         padding:10px;
         border-radius:6px;
         color:#38bdf8;
         font-size:12px;
         margin-bottom:6px;
-        ">${data.logs[c]}</pre>
-        `;
+    ">${logs[c]}</pre>
+    `;
+    }
+
+    if (!html) {
+    html = "<p class='text-slate-400'>No logs yet...</p>";
     }
 
     document.getElementById("logContent").innerHTML = html;
-  }
 
   load();
   logInterval = setInterval(load, 1000);
@@ -385,6 +402,8 @@ function toggleSubmit() {
 // 🔁 AUTO REFRESH
 setInterval(fetchData, 3000);
 fetchData();
+setInterval(fetchCredits, 5000);
+fetchCredits();
 
 </script>
 
