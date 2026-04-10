@@ -245,9 +245,43 @@ function updateNodes(nodes) {
   }
 
   document.getElementById("nodes").innerHTML =
-    nodes.connected_nodes.map(n => `
-      <div class="bg-slate-800 p-3 rounded">🟢 ${n}</div>
-    `).join("");
+    nodes.connected_nodes.map(n => {
+
+      const cpu = n.cpu || 0;
+      const ram = n.ram || 0;
+
+      const cpuColor =
+        cpu > 80 ? "bg-red-500" :
+        cpu > 50 ? "bg-yellow-400" :
+        "bg-green-400";
+
+      const ramColor =
+        ram > 80 ? "bg-red-500" :
+        ram > 50 ? "bg-yellow-400" :
+        "bg-blue-400";
+
+      return `
+      <div class="card p-3">
+
+        <div class="flex justify-between items-center mb-2">
+          <span>${n.id}</span>
+        </div>
+
+        <div class="text-xs text-slate-400">
+          CPU: ${cpu}% | RAM: ${ram}%
+        </div>
+
+        <div class="mt-2 h-2 bg-slate-700 rounded">
+          <div class="h-full ${cpuColor}" style="width:${cpu}%"></div>
+        </div>
+
+        <div class="mt-1 h-2 bg-slate-700 rounded">
+          <div class="h-full ${ramColor}" style="width:${ram}%"></div>
+        </div>
+
+      </div>
+      `;
+    }).join("");
 }
 
 // 📦 JOBS
@@ -275,7 +309,7 @@ function updateJobs(jobs) {
           ${j.completed}/${j.total}
         </td>
         <td>${j.duration}s</td>
-        <td>${j.speed}</td>
+        <td>${j.speed} chunks/s</td>
         <td>
           <button onclick="viewLogs('${id}')">Logs</button>
           ${j.status === "running"
@@ -304,8 +338,11 @@ function updateStats(nodes, jobs) {
   });
 
   document.getElementById("runningCount").innerText = running;
+  const avg =
+  (speed / (Object.keys(jobs || {}).length || 1)).toFixed(2);
+
   document.getElementById("avgSpeed").innerText =
-    (speed / (Object.keys(jobs || {}).length || 1)).toFixed(2);
+    avg + " chunks/s";
 }
 
 // ❌ CANCEL

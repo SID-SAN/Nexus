@@ -261,8 +261,20 @@ def get_resources():
 
 @app.get("/cluster_status")
 def cluster_status():
+
+    nodes = []
+
+    for node_id in connected_nodes.keys():
+        stats = node_resources.get(node_id, {})
+
+        nodes.append({
+            "id": node_id,
+            "cpu": stats.get("cpu", 0),
+            "ram": stats.get("ram", 0)
+        })
+
     return {
-        "connected_nodes": list(connected_nodes.keys()),
+        "connected_nodes": nodes,
         "resources": node_resources,
         "active_jobs": list(jobs.keys())
     }
