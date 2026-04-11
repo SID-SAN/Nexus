@@ -324,10 +324,11 @@ function updateJobs(jobs) {
         <td>${j.speed} chunks/s</td>
         <td>
           <button onclick="viewLogs('${id}')">Logs</button>
-          ${j.status === "running"
+
+          ${(j.status || "").toLowerCase().trim() === "running"
             ? `<button onclick="cancelJob('${id}')">Cancel</button>` : ""}
 
-          ${j.status === "completed"
+          ${(j.status || "").toLowerCase().trim() === "completed"
             ? `<button onclick="viewResult('${id}')">Result</button>` : ""}
         </td>
       </tr>
