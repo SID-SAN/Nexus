@@ -143,6 +143,18 @@
   <div id="logContent"></div>
 </div>
 
+<div id="resultPanel"
+  class="hidden fixed right-0 top-0 w-96 h-full bg-slate-900 p-4 overflow-auto">
+
+  <button onclick="closeResult()" class="bg-red-500 px-3 py-1 mb-3">
+    Close
+  </button>
+
+  <h3 class="mb-2">Result</h3>
+
+  <pre id="resultContent" class="text-green-400"></pre>
+</div>
+
 <script>
 
 const BASE_URL = window.location.origin;
@@ -314,6 +326,9 @@ function updateJobs(jobs) {
           <button onclick="viewLogs('${id}')">Logs</button>
           ${j.status === "running"
             ? `<button onclick="cancelJob('${id}')">Cancel</button>` : ""}
+
+          ${j.status === "completed"
+            ? `<button onclick="viewResult('${id}')">Result</button>` : ""}
         </td>
       </tr>
       `;
@@ -397,6 +412,23 @@ function closeLogs() {
 document.getElementById("logPanel").classList.add("hidden");
 clearInterval(logInterval);
 }
+
+
+async function viewResult(id) {
+
+  document.getElementById("resultPanel").classList.remove("hidden");
+
+  const res = await fetch(BASE_URL + `/job_result/${id}`);
+  const data = await res.json();
+
+  document.getElementById("resultContent").innerText =
+    JSON.stringify(data.result, null, 2);
+}
+
+function closeResult() {
+  document.getElementById("resultPanel").classList.add("hidden");
+}
+
 
 // 🚀 SUBMIT
 async function submitJob() {
