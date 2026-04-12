@@ -470,34 +470,36 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 payload = message["payload"]
                 job_id = payload["job_id"]
                 chunk = str(payload["chunk"])
+                chunk_key = str(chunk)
                 status = payload.get("status", "success")
 
                 job = jobs.get(job_id)
                 if not job or job["status"] == "cancelled":
                     continue
 
-                if chunk in job["results"]:
+                if chunk_key in job["results"]:
                     continue
 
                 if status == "failed":
-                    retries = job["retries"].get(chunk, 0)
+                    retries = job["retries"].get(chunk_key, 0)
 
                     if retries < MAX_RETRIES:
                         print(f"[Retry Triggered] chunk {chunk} for job {job_id}")
 
                         job["queue"].append(int(chunk))
-                        job["status_map"][chunk] = "pending"
-                        job["retries"][chunk] = retries + 1
-                        job["errors"][chunk] = payload.get("error", "Execution failed")
+                        job["status_map"][chunk_key] = "pending"
+                        job["retries"][chunk_key] = retries + 1
+                        job["errors"][chunk_key] = payload.get("error", "Execution failed")
 
                     else:
                         print(f"[Permanent Failure] chunk {chunk}")
 
-                        job["status_map"][chunk] = "failed"
-                        job["errors"][chunk] = "Max retries exceeded"
+                        job["status_map"][chunk_key] = "failed"
+                        job["errors"][chunk_key] = "Max retries exceeded"
 
-                    job["logs"][chunk] = payload.get("logs", "")
+                    job["logs"][chunk_key] = payload.get("logs", "")
                     job["updated_at"] = time.time()
+                    print("Retries:", job["retries"])
 
                     asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
                     continue
@@ -510,10 +512,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     except:
                         val = None
 
-                job["results"][chunk] = val
-                job["logs"][chunk] = payload.get("logs", "")
-                job["errors"][chunk] = payload.get("error", "")
-                job["status_map"][chunk] = "completed"
+                job["results"][chunk_key] = val
+                job["logs"][chunk_key] = payload.get("logs", "")
+                job["errors"][chunk_key] = payload.get("error", "")
+                job["status_map"][chunk_key] = "completed"
                 job["updated_at"] = time.time()
 
                 # 🔥 CREDIT REWARD LOGIC
