@@ -552,21 +552,35 @@ def job_status(job_id: str):
 
 
 @app.get("/job_result/{job_id}")
-def job_result(job_id: str):
+def job_result(job_id: str, api_key: str):
+    user = get_user_by_api_key(api_key)
+    if not user:
+        return {"error": "invalid api key"}
+
     job = jobs.get(job_id)
-    if not job or job["status"] != "completed":
+    if not job or job.get("owner") != user["user_id"]:
+        return {"error": "unauthorized"}
+
+    if job["status"] != "completed":
         return {"status": "running"}
 
     return {"result": apply_reducer(job["results"], job["reducer"])}
 
 
 @app.get("/all_jobs")
-def all_jobs():
+def all_jobs(api_key: str):
+    user = get_user_by_api_key(api_key)
+    if not user:
+        return {"error": "invalid api key"}
+
+    user_id = user["user_id"]
     out = {}
 
     now = time.time()
 
     for jid, job in jobs.items():
+        if job.get("owner") != user_id:
+            continue
 
         completed = len(job["results"])
         total = job["chunks"]
@@ -594,11 +608,17 @@ def all_jobs():
 
 
 @app.post("/cancel_job/{job_id}")
-def cancel_job(job_id: str):
+def cancel_job(job_id: str, api_key: str):
+    user = get_user_by_api_key(api_key)
+    if not user:
+        return {"error": "invalid api key"}
+
     job = jobs.get(job_id)
 
     if not job:
         return {"error": "not found"}
+    if job.get("owner") != user["user_id"]:
+        return {"error": "unauthorized"}
 
     if job["status"] != "running":
         return {"status": job["status"]}
@@ -640,12 +660,15 @@ def cancel_job(job_id: str):
 
 
 @app.get("/job_logs/{job_id}")
-def job_logs(job_id: str):
+def job_logs(job_id: str, api_key: str):
+    user = get_user_by_api_key(api_key)
+    if not user:
+        return {"error": "invalid api key"}
 
     job = jobs.get(job_id)
 
-    if not job:
-        return {"error": "job not found"}
+    if not job or job.get("owner") != user["user_id"]:
+        return {"error": "unauthorized"}
 
     return {
         "job_id": job_id,

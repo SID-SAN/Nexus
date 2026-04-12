@@ -175,9 +175,16 @@ function showLogin() {
 
 // 🚀 FETCH
 async function fetchData() {
+  const apiKey = localStorage.getItem("api_key");
+  if (!apiKey) {
+    updateNodes({ connected_nodes: [] });
+    updateJobs({});
+    updateStats({ connected_nodes: [] }, {});
+    return;
+  }
 
   const nodesRes = await fetch(BASE_URL + "/cluster_status");
-  const jobsRes = await fetch(BASE_URL + "/all_jobs");
+  const jobsRes = await fetch(BASE_URL + "/all_jobs?api_key=" + apiKey);
 
   const nodes = await nodesRes.json();
   const jobs = await jobsRes.json();
@@ -367,7 +374,13 @@ function updateStats(nodes, jobs) {
 
 // ❌ CANCEL
 async function cancelJob(id) {
-  await fetch(BASE_URL + `/cancel_job/${id}`, { method: "POST" });
+  const apiKey = localStorage.getItem("api_key");
+  if (!apiKey) return alert("Login first");
+
+  await fetch(
+    BASE_URL + `/cancel_job/${id}?api_key=${apiKey}`,
+    { method: "POST" }
+  );
 }
 
 // 📜 LOGS
@@ -378,8 +391,10 @@ function viewLogs(id) {
   if (logInterval) clearInterval(logInterval);
 
   async function load() {
+    const apiKey = localStorage.getItem("api_key");
+    if (!apiKey) return;
 
-    const res = await fetch(BASE_URL + `/job_logs/${id}`);
+    const res = await fetch(BASE_URL + `/job_logs/${id}?api_key=${apiKey}`);
     const data = await res.json();
 
     console.log("LOG DATA:", data); // debug
@@ -420,10 +435,12 @@ clearInterval(logInterval);
 
 
 async function viewResult(id) {
+  const apiKey = localStorage.getItem("api_key");
+  if (!apiKey) return alert("Login first");
 
   document.getElementById("resultPanel").classList.remove("hidden");
 
-  const res = await fetch(BASE_URL + `/job_result/${id}`);
+  const res = await fetch(BASE_URL + `/job_result/${id}?api_key=${apiKey}`);
   const data = await res.json();
 
   document.getElementById("resultContent").innerText =
