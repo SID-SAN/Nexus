@@ -481,25 +481,64 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 if status == "failed":
-                    retries = job["retries"].get(chunk_key, 0)
+                    failed_nodes_map = job.setdefault("failed_nodes", {})
+                    failed_node_set = failed_nodes_map.setdefault(chunk_key, set())
+                    if isinstance(failed_node_set, list):
+                        failed_node_set = set(failed_node_set)
+                        failed_nodes_map[chunk_key] = failed_node_set
+                    failed_node_set.add(node_id)
 
-                    if retries < MAX_RETRIES:
-                        print(f"[Retry Triggered] chunk {chunk} for job {job_id}")
+                    available_nodes = set(connected_nodes.keys())
+                    failed_nodes = failed_node_set
 
-                        job["queue"].append(int(chunk))
-                        job["status_map"][chunk_key] = "pending"
-                        job["retries"][chunk_key] = retries + 1
-                        job["errors"][chunk_key] = payload.get("error", "Execution failed")
-
-                    else:
-                        print(f"[Permanent Failure] chunk {chunk}")
+                    if failed_nodes.issuperset(available_nodes) and available_nodes:
+                        print(f"[All nodes failed chunk {chunk}]")
 
                         job["status_map"][chunk_key] = "failed"
-                        job["errors"][chunk_key] = "Max retries exceeded"
+                        job["errors"][chunk_key] = "All nodes failed execution"
+
+                        while int(chunk) in job["queue"]:
+                            job["queue"].remove(int(chunk))
+                    else:
+                        retries = job["retries"].get(chunk_key, 0)
+
+                        if retries < MAX_RETRIES:
+                            print(f"[Retry Triggered] chunk {chunk} for job {job_id}")
+
+                            if int(chunk) not in job["queue"]:
+                                job["queue"].append(int(chunk))
+                            job["status_map"][chunk_key] = "pending"
+                            job["retries"][chunk_key] = retries + 1
+                            job["errors"][chunk_key] = payload.get("error", "Execution failed")
+
+                        else:
+                            print(f"[Permanent Failure] chunk {chunk}")
+
+                            job["status_map"][chunk_key] = "failed"
+                            job["errors"][chunk_key] = "Max retries exceeded"
+                            while int(chunk) in job["queue"]:
+                                job["queue"].remove(int(chunk))
 
                     job["logs"][chunk_key] = payload.get("logs", "")
                     job["updated_at"] = time.time()
                     print("Retries:", job["retries"])
+
+                    completed_chunks = [
+                        c for c, s in job["status_map"].items()
+                        if s == "completed"
+                    ]
+
+                    failed_chunks = [
+                        c for c, s in job["status_map"].items()
+                        if s == "failed"
+                    ]
+
+                    if len(completed_chunks) == job["chunks"]:
+                        job["status"] = "completed"
+                        job["completed_at"] = time.time()
+                    elif failed_chunks and not job["queue"]:
+                        job["status"] = "failed"
+                        job["completed_at"] = time.time()
 
                     asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
                     continue
