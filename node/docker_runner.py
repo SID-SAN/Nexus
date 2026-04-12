@@ -31,13 +31,15 @@ def run_in_docker(job_path, chunk, total_chunks):
         last_line = output[-1] if output else ""
 
         return {
+            "status": "success" if result.returncode == 0 else "failed",
             "result": last_line,
             "logs": result.stdout,
-            "error": result.stderr
+            "error": result.stderr if result.returncode != 0 else None
         }
 
     except subprocess.TimeoutExpired:
         return {
+            "status": "failed",
             "result": None,
             "logs": "",
             "error": "Execution timed out"

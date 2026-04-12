@@ -37,31 +37,48 @@ async def run_single_chunk(job_id, chunk, total_chunks):
     async with semaphore:
 
         print(f"[V4] Running chunk {chunk}")
+        try:
+            exec_output = await asyncio.to_thread(
+                execute_job,
+                job_cache[job_id],
+                chunk,
+                total_chunks
+            )
 
-        exec_output = await asyncio.to_thread(
-            execute_job,
-            job_cache[job_id],
-            chunk,
-            total_chunks
-        )
+            status = exec_output.get("status", "success") if exec_output else "failed"
+            error_msg = exec_output.get("error") if exec_output else "Execution failed"
 
-        response = {
-            "type": "submit_result",
-            "source": NODE_ID,
-            "payload": {
-                "job_id": job_id,
-                "chunk": chunk,
-                "result": exec_output.get("result"),
-                "logs": exec_output.get("logs", ""),
-                "error": exec_output.get("error", "")
+            response = {
+                "type": "submit_result",
+                "source": NODE_ID,
+                "payload": {
+                    "job_id": job_id,
+                    "chunk": chunk,
+                    "status": status,
+                    "result": exec_output.get("result") if exec_output else None,
+                    "logs": exec_output.get("logs", "") if exec_output else "",
+                    "error": error_msg
+                }
             }
-        }
+        except Exception as e:
+            response = {
+                "type": "submit_result",
+                "source": NODE_ID,
+                "payload": {
+                    "job_id": job_id,
+                    "chunk": chunk,
+                    "status": "failed",
+                    "result": None,
+                    "logs": "",
+                    "error": str(e)
+                }
+            }
+        finally:
+            active_chunks -= 1
 
         await send_queue.put(response)
         print("[Node] Queued result:", response)
-
         print(f"[V4] Submitted chunk {chunk}")
-        active_chunks -= 1
 
 
 async def execute_chunk_batch(job_id, chunks, total_chunks):

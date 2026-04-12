@@ -470,12 +470,41 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 payload = message["payload"]
                 job_id = payload["job_id"]
                 chunk = str(payload["chunk"])
+                status = payload.get("status", "success")
 
                 job = jobs.get(job_id)
                 if not job or job["status"] == "cancelled":
                     continue
 
                 if chunk in job["results"]:
+                    continue
+
+                if status == "failed":
+                    job["status_map"][chunk] = "failed"
+                    job["errors"][chunk] = payload.get("error", "Execution failed")
+                    job["logs"][chunk] = payload.get("logs", "")
+                    job["updated_at"] = time.time()
+
+                    print(f"[Chunk Failed] {chunk} in job {job_id}")
+
+                    completed_chunks = [
+                        c for c, s in job["status_map"].items()
+                        if s == "completed"
+                    ]
+
+                    failed_chunks = [
+                        c for c, s in job["status_map"].items()
+                        if s == "failed"
+                    ]
+
+                    if len(completed_chunks) == job["chunks"]:
+                        job["status"] = "completed"
+                        job["completed_at"] = time.time()
+                    elif failed_chunks and not job["queue"]:
+                        job["status"] = "failed"
+                        job["completed_at"] = time.time()
+
+                    asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
                     continue
 
                 try:
@@ -496,7 +525,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 sender_node_id = node_id
                 user_id = node_owner_map.get(sender_node_id)
 
-                if user_id:
+                if status == "success" and user_id:
                     price = job.get("price", 0)
 
                     if price > 0:
@@ -520,8 +549,21 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         print("⚠️ No price set for job, skipping reward")
                 
 
-                if len(job["results"]) == job["chunks"]:
+                completed_chunks = [
+                    c for c, s in job["status_map"].items()
+                    if s == "completed"
+                ]
+
+                failed_chunks = [
+                    c for c, s in job["status_map"].items()
+                    if s == "failed"
+                ]
+
+                if len(completed_chunks) == job["chunks"]:
                     job["status"] = "completed"
+                    job["completed_at"] = time.time()
+                elif failed_chunks and not job["queue"]:
+                    job["status"] = "failed"
                     job["completed_at"] = time.time()
 
                 asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
