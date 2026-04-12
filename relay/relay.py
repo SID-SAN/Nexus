@@ -480,29 +480,24 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 if status == "failed":
-                    job["status_map"][chunk] = "failed"
-                    job["errors"][chunk] = payload.get("error", "Execution failed")
+                    retries = job["retries"].get(chunk, 0)
+
+                    if retries < MAX_RETRIES:
+                        print(f"[Retry Triggered] chunk {chunk} for job {job_id}")
+
+                        job["queue"].append(int(chunk))
+                        job["status_map"][chunk] = "pending"
+                        job["retries"][chunk] = retries + 1
+                        job["errors"][chunk] = payload.get("error", "Execution failed")
+
+                    else:
+                        print(f"[Permanent Failure] chunk {chunk}")
+
+                        job["status_map"][chunk] = "failed"
+                        job["errors"][chunk] = "Max retries exceeded"
+
                     job["logs"][chunk] = payload.get("logs", "")
                     job["updated_at"] = time.time()
-
-                    print(f"[Chunk Failed] {chunk} in job {job_id}")
-
-                    completed_chunks = [
-                        c for c, s in job["status_map"].items()
-                        if s == "completed"
-                    ]
-
-                    failed_chunks = [
-                        c for c, s in job["status_map"].items()
-                        if s == "failed"
-                    ]
-
-                    if len(completed_chunks) == job["chunks"]:
-                        job["status"] = "completed"
-                        job["completed_at"] = time.time()
-                    elif failed_chunks and not job["queue"]:
-                        job["status"] = "failed"
-                        job["completed_at"] = time.time()
 
                     asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
                     continue
