@@ -295,6 +295,7 @@ async def submit_job(
     chunks: int = Form(None),
     reducer: str = Form("sum"),
     api_key: str = Form(...),
+    job_name: str = Form("Untitled Job"),
     price: int = Form(...)
 ):
     
@@ -326,6 +327,7 @@ async def submit_job(
         f.write(await file.read())
 
     jobs[job_id] = {
+        "name": job_name,
         "chunks": chunks,
         "queue": list(range(1, chunks + 1)),
         "results": {},
@@ -579,6 +581,7 @@ def all_jobs():
             speed = completed
 
         out[jid] = {
+            "name": job.get("name", "Untitled Job"),
             "status": job["status"],
             "completed": completed,
             "total": total,

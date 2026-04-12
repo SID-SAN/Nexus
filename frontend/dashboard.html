@@ -74,6 +74,8 @@
 
 <!-- Submit Panel -->
 <div id="submitPanel" style="display:none;" class="bg-slate-800 p-4 rounded mb-6">    
+  <input type="text" id="jobName" placeholder="Job Name"
+    class="mb-2 w-full text-black">
   <input type="file" id="file" class="mb-2 text-black">
   <input type="number" id="chunks" placeholder="Chunks"
     class="mb-2 w-full text-black">
@@ -116,6 +118,7 @@
   <table class="w-full text-sm">
     <thead>
       <tr class="border-t border-slate-700 hover:bg-slate-800 transition"">
+        <th class="p-2">Name</th>
         <th class="p-2">ID</th>
         <th>Status</th>
         <th>Progress</th>
@@ -301,7 +304,7 @@ function updateJobs(jobs) {
 
   if (!jobs || Object.keys(jobs).length === 0) {
     document.getElementById("jobBody").innerHTML =
-      "<tr><td colspan='6'>No jobs</td></tr>";
+      "<tr><td colspan='7'>No jobs</td></tr>";
     return;
   }
 
@@ -312,6 +315,7 @@ function updateJobs(jobs) {
 
       return `
       <tr class="border-t border-slate-700">
+        <td class="p-2">${j.name || "Untitled"}</td>
         <td class="p-2">${id.slice(0,8)}</td>
         <td>${j.status}</td>
         <td>
@@ -435,6 +439,7 @@ function closeResult() {
 async function submitJob() {
 
 const file = document.getElementById("file").files[0];
+const jobName = document.getElementById("jobName").value || "Untitled Job";
 const chunks = document.getElementById("chunks").value;
 const reducer = document.getElementById("reducer").value;
 
@@ -443,6 +448,7 @@ if (!apiKey) return alert("Login first");
 
 const form = new FormData();
 form.append("file", file);
+form.append("job_name", jobName);
 form.append("chunks", chunks);
 form.append("reducer", reducer);
 form.append("api_key", apiKey);
