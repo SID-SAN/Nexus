@@ -1,25 +1,50 @@
-import subprocess
 import os
+import shlex
+import subprocess
 import uuid
 
-def run_in_docker(job_path, chunk, total_chunks):
+IMAGE_NAME = "nexus-base"
 
+
+def _ensure_deps_installed(extract_path):
+    marker = os.path.join(extract_path, ".deps_installed")
+    if os.path.exists(marker):
+        return
+
+    cmd = [
+        "docker", "run",
+        "--rm",
+        "--network", "none",
+        "-v", f"{extract_path}:/app",
+        "-w", "/app",
+        IMAGE_NAME,
+        "sh", "-lc",
+        "if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi; touch .deps_installed",
+    ]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=False)
+
+
+def run_in_docker(job_id, args):
+    extract_path = os.path.abspath(f"jobs/{job_id}")
     container_name = f"nexus_job_{uuid.uuid4().hex[:8]}"
+    arg_text = " ".join([shlex.quote(str(a)) for a in args])
 
     cmd = [
         "docker", "run",
         "--rm",
         "--name", container_name,
-        "--cpus=1",
+        "--network", "none",
+        "--cpus=0.5",
         "--memory=512m",
-        "-v", f"{os.path.abspath(job_path)}:/app",
-        "python:3.10",
-        "python", "/app/main.py",
-        str(chunk),
-        str(total_chunks)
+        "-v", f"{extract_path}:/app",
+        "-w", "/app",
+        IMAGE_NAME,
+        "sh", "-lc",
+        f"python task.py {arg_text}"
     ]
 
     try:
+        _ensure_deps_installed(extract_path)
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -43,4 +68,11 @@ def run_in_docker(job_path, chunk, total_chunks):
             "result": None,
             "logs": "",
             "error": "Execution timed out"
+        }
+    except Exception as e:
+        return {
+            "status": "failed",
+            "result": None,
+            "logs": "",
+            "error": str(e)
         }

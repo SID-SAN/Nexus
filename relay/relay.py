@@ -7,6 +7,7 @@ import asyncio
 import time
 import hashlib
 import random
+import zipfile
 
 from relay.job_persistence import load_jobs, save_jobs
 
@@ -232,6 +233,61 @@ def apply_reducer(results, reducer):
     return None
 
 
+def extract_config(zip_path):
+    try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            names = set(z.namelist())
+            if "task.py" not in names:
+                return {"error": "task.py is required in the root of the ZIP"}
+            if "config.json" in names:
+                return json.loads(z.read("config.json"))
+    except zipfile.BadZipFile:
+        return {"error": "invalid zip file"}
+    except Exception as e:
+        return {"error": f"failed to parse job package: {e}"}
+    return None
+
+
+def create_range_chunks(start, end, size):
+    chunks = []
+    chunk_id = 1
+    for i in range(start, end, size):
+        chunks.append({
+            "id": chunk_id,
+            "start": i,
+            "end": min(i + size, end)
+        })
+        chunk_id += 1
+    return chunks
+
+
+def create_file_chunks(files):
+    return [{"id": i + 1, "file": f} for i, f in enumerate(files)]
+
+
+def build_chunks_data(config, fallback_chunks):
+    if not config or not isinstance(config, dict):
+        return [{"id": i} for i in range(1, fallback_chunks + 1)]
+
+    chunk_type = config.get("chunk_type")
+
+    if chunk_type == "range":
+        start = int(config.get("start", 0))
+        end = int(config.get("end", 0))
+        size = int(config.get("chunk_size", 0))
+        if size <= 0 or end <= start:
+            return {"error": "invalid range config"}
+        return create_range_chunks(start, end, size)
+
+    if chunk_type == "file_list":
+        files = config.get("files")
+        if not isinstance(files, list) or not files:
+            return {"error": "invalid file_list config"}
+        return create_file_chunks(files)
+
+    return [{"id": i} for i in range(1, fallback_chunks + 1)]
+
+
 # -----------------------------
 # STARTUP
 # -----------------------------
@@ -312,12 +368,6 @@ async def submit_job(
     if user["credits"] < price:
         return {"error": "insufficient credits"}
 
-    new_credits = user["credits"] - price
-    # find api_key of this user
-    api_key = user["api_key"]
-
-    update_user_credits_by_api_key(api_key, new_credits) 
-
     if not chunks or chunks <= 0:
         chunks = auto_calculate_chunks()
 
@@ -327,10 +377,26 @@ async def submit_job(
     with open(path, "wb") as f:
         f.write(await file.read())
 
+    config = extract_config(path)
+    if isinstance(config, dict) and config.get("error"):
+        return {"error": config["error"]}
+
+    chunks_data = build_chunks_data(config, chunks)
+    if isinstance(chunks_data, dict) and chunks_data.get("error"):
+        return {"error": chunks_data["error"]}
+
+    total_chunks = len(chunks_data)
+    if total_chunks <= 0:
+        return {"error": "no chunks generated from config"}
+
+    new_credits = user["credits"] - price
+    update_user_credits_by_api_key(user["api_key"], new_credits)
+
     jobs[job_id] = {
         "name": job_name,
-        "chunks": chunks,
-        "queue": list(range(1, chunks + 1)),
+        "chunks": total_chunks,
+        "chunks_data": chunks_data,
+        "queue": [c["id"] for c in chunks_data],
         "results": {},
         "verifications": {},
         "rewarded_chunks": set(),
@@ -349,7 +415,7 @@ async def submit_job(
 
     save_jobs(jobs)
 
-    return {"job_id": job_id, "chunks": chunks}
+    return {"job_id": job_id, "chunks": total_chunks}
 
 
 # -----------------------------
@@ -489,12 +555,17 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     assigned.append(chunk)
 
                 if assigned:
+                    chunk_data_map = {
+                        str(c["id"]): c
+                        for c in job.get("chunks_data", [])
+                    }
                     await safe_send(websocket, {
                         "type": "assign_chunk_batch",
                         "payload": {
                             "job_id": jid,
                             "chunks": assigned,
-                            "total_chunks": job["chunks"]
+                            "total_chunks": job["chunks"],
+                            "chunk_data": chunk_data_map
                         }
                     }, node_id)
 
@@ -578,12 +649,19 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
                     continue
 
+                raw_result = payload.get("result")
+                if raw_result is None:
+                    parsed_result = ""
+                else:
+                    parsed_result = str(raw_result).strip().splitlines()
+                    parsed_result = parsed_result[-1].strip() if parsed_result else ""
+
                 try:
-                    val = int(payload["result"])
-                except:
+                    val = int(parsed_result)
+                except Exception:
                     try:
-                        val = float(payload["result"])
-                    except:
+                        val = float(parsed_result)
+                    except Exception:
                         val = None
 
                 verification_map = job.setdefault("verifications", {})

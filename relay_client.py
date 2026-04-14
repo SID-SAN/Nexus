@@ -6,7 +6,7 @@ import time
 
 from config import NODE_ID
 from node.downloader import download_job
-from node.executor import execute_job
+from node.executor import execute_chunk
 import aiohttp
 
 API_KEY = os.getenv("API_KEY")
@@ -30,7 +30,7 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
 # 🔥 BACKGROUND EXECUTION
 # -----------------------------
 
-async def run_single_chunk(job_id, chunk, total_chunks):
+async def run_single_chunk(job_id, chunk, total_chunks, chunk_data=None):
 
     global websocket_connection, active_chunks
 
@@ -38,12 +38,7 @@ async def run_single_chunk(job_id, chunk, total_chunks):
 
         print(f"[V4] Running chunk {chunk}")
         try:
-            exec_output = await asyncio.to_thread(
-                execute_job,
-                job_cache[job_id],
-                chunk,
-                total_chunks
-            )
+            exec_output = await asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data or {})
 
             status = exec_output.get("status", "success") if exec_output else "failed"
             error_msg = exec_output.get("error") if exec_output else "Execution failed"
@@ -81,11 +76,10 @@ async def run_single_chunk(job_id, chunk, total_chunks):
         print(f"[V4] Submitted chunk {chunk}")
 
 
-async def execute_chunk_batch(job_id, chunks, total_chunks):
+async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
 
     try:
         global active_chunks
-        active_chunks += len(chunks)
 
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{RELAY_HTTP_URL}/job_status/{job_id}") as resp:
@@ -105,23 +99,61 @@ async def execute_chunk_batch(job_id, chunks, total_chunks):
                     print("[V4] Job cancelled, skipping batch")
                     return
 
-        # download job once
-        if job_id not in job_cache:
-            if os.path.exists(f"jobs/{job_id}"):
-                job_cache[job_id] = f"jobs/{job_id}"
-            else:
-                job_cache[job_id] = download_job(job_id)
-
-        # 🔥 PARALLEL EXECUTION
-        tasks = []
+        # ensure job package exists locally
+        if not os.path.exists(f"jobs/{job_id}.zip") and not os.path.exists(f"jobs/{job_id}"):
+            download_job(job_id)
 
         for chunk in chunks:
-            task = asyncio.create_task(
-                run_single_chunk(job_id, chunk, total_chunks)
-            )
-            tasks.append(task)
+            active_chunks += 1
+            try:
+                exec_output = await asyncio.wait_for(
+                    asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data or {}),
+                    timeout=70
+                )
+                response = {
+                    "type": "submit_result",
+                    "source": NODE_ID,
+                    "payload": {
+                        "job_id": job_id,
+                        "chunk": chunk,
+                        "status": exec_output["status"],
+                        "result": exec_output["result"],
+                        "logs": exec_output["logs"],
+                        "error": exec_output["error"],
+                    }
+                }
+            except asyncio.TimeoutError:
+                response = {
+                    "type": "submit_result",
+                    "source": NODE_ID,
+                    "payload": {
+                        "job_id": job_id,
+                        "chunk": chunk,
+                        "status": "failed",
+                        "result": None,
+                        "logs": "",
+                        "error": "Chunk execution timed out",
+                    }
+                }
+            except Exception as e:
+                response = {
+                    "type": "submit_result",
+                    "source": NODE_ID,
+                    "payload": {
+                        "job_id": job_id,
+                        "chunk": chunk,
+                        "status": "failed",
+                        "result": None,
+                        "logs": "",
+                        "error": str(e),
+                    }
+                }
+            finally:
+                active_chunks -= 1
 
-        await asyncio.gather(*tasks)
+            await send_queue.put(response)
+            print("[Node] Queued result:", response)
+            print(f"[V4] Submitted chunk {chunk}")
 
     except Exception as e:
         print(f"[V4] Batch execution failed: {e}")
@@ -194,11 +226,12 @@ async def connect_to_relay():
                         job_id = payload["job_id"]
                         chunk = payload["chunk"]
                         total_chunks = payload["total_chunks"]
+                        chunk_data = payload.get("chunk_data", {})
 
                         print(f"[V4] Assigned chunk {chunk}/{total_chunks}")
 
                         asyncio.create_task(
-                            execute_chunk_batch(job_id, [chunk], total_chunks)
+                            execute_chunk_batch(job_id, [chunk], total_chunks, chunk_data)
                         )
 
                     # -----------------------------
@@ -211,11 +244,12 @@ async def connect_to_relay():
                         job_id = payload["job_id"]
                         chunks = payload["chunks"]
                         total_chunks = payload["total_chunks"]
+                        chunk_data = payload.get("chunk_data", {})
 
                         print(f"[V4] Batch assigned {len(chunks)} chunks")
 
                         asyncio.create_task(
-                            execute_chunk_batch(job_id, chunks, total_chunks)
+                            execute_chunk_batch(job_id, chunks, total_chunks, chunk_data)
                         )
 
                     # -----------------------------
@@ -318,3 +352,4 @@ async def request_work_loop():
 
         sleep_time = 2 if active_chunks == 0 else 4
         await asyncio.sleep(sleep_time)
+
