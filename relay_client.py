@@ -7,8 +7,9 @@ from urllib.parse import quote
 from node.downloader import download_job
 from node.executor import execute_chunk
 import aiohttp
+from config import RELAY_URL
 
-DEFAULT_RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
+DEFAULT_RELAY_HTTP_URL = RELAY_URL
 
 
 def get_node_id():

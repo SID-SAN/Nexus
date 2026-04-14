@@ -1,7 +1,7 @@
 import argparse
 import os
 import asyncio
-
+import uuid
 from relay_client import connect_to_relay
 from resource_monitor import resource_monitor_loop
 
@@ -31,7 +31,7 @@ def main():
 
     parser.add_argument(
         "--node-id",
-        default="node_default"
+        default=f"node_{uuid.uuid4().hex[:6]}"
     )
 
     parser.add_argument(

@@ -192,7 +192,7 @@ job.zip
 
 ---
 
-## 🔹 task.py (Required)
+## 🔹 task.py
 
 ```python
 import sys
@@ -202,10 +202,13 @@ chunk = int(sys.argv[1])
 # your logic here
 print(result)
 ````
+> ⚠️ Important: Tasks must be **chunk-aware**.  
+> Each chunk should process a **specific portion of data**, not the entire dataset.  
+> For range-based jobs, use `start` and `end` arguments provided via `config.json`.
 
 ---
 
-## 🔹 config.json (Optional)
+## 🔹 config.json
 
 ### Range-based
 

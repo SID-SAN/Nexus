@@ -1,6 +1,7 @@
 import os
 import shlex
 import subprocess
+from unittest import result
 import uuid
 
 IMAGE_NAME = "nexus-base"
@@ -50,7 +51,7 @@ def run_in_docker(job_id, args):
             timeout=60
         )
 
-        output = result.stdout.strip().split("\n")
+        output = result.stdout.strip().splitlines()        
         last_line = output[-1] if output else ""
 
         return {

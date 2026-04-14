@@ -77,8 +77,7 @@
   <input type="text" id="jobName" placeholder="Job Name"
     class="mb-2 w-full text-black">
   <input type="file" id="file" class="mb-2 text-black">
-  <input type="number" id="chunks" placeholder="Chunks"
-    class="mb-2 w-full text-black">
+
   <select id="reducer" class="mb-2 w-full text-black">
     <option value="sum">sum</option>
     <option value="avg">avg</option>
@@ -455,31 +454,29 @@ function closeResult() {
 // 🚀 SUBMIT
 async function submitJob() {
 
-const file = document.getElementById("file").files[0];
-const jobName = document.getElementById("jobName").value || "Untitled Job";
-const chunks = document.getElementById("chunks").value;
-const reducer = document.getElementById("reducer").value;
+  const file = document.getElementById("file").files[0];
+  const jobName = document.getElementById("jobName").value || "Untitled Job";
+  const reducer = document.getElementById("reducer").value;
 
-const apiKey = localStorage.getItem("api_key");
-if (!apiKey) return alert("Login first");
+  const apiKey = localStorage.getItem("api_key");
+  if (!apiKey) return alert("Login first");
 
-const form = new FormData();
-form.append("file", file);
-form.append("job_name", jobName);
-form.append("chunks", chunks);
-form.append("reducer", reducer);
-form.append("api_key", apiKey);
-form.append("price", 100);
+  const form = new FormData();
+  form.append("file", file);
+  form.append("job_name", jobName);
+  form.append("reducer", reducer);
+  form.append("api_key", apiKey);
+  form.append("price", 100);
 
-const res = await fetch(BASE_URL + "/submit_job", {
-method: "POST",
-body: form
-});
+  const res = await fetch(BASE_URL + "/submit_job", {
+  method: "POST",
+  body: form
+  });
 
-const data = await res.json();
+  const data = await res.json();
 
-document.getElementById("submitStatus").innerText =
-"Submitted: " + data.job_id;
+  document.getElementById("submitStatus").innerText =
+  "Submitted: " + data.job_id;
 }
 
 // UI
