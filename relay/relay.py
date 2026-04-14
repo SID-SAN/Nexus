@@ -506,11 +506,16 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 jid, job = best_job
+                pending_verifications = [
+                    c for c, votes in job.get("verifications", {}).items()
+                    if c not in job["results"] and len(votes) < 2
+                ]
 
                 node_capacity = get_node_capacity(node_id)
+                total_available = len(job["queue"]) + len(pending_verifications)
                 batch_size = min(
                     max(1, node_capacity // 20),
-                    len(job["queue"])
+                    max(1, total_available)
                     )
 
                 assigned = []
@@ -525,6 +530,16 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         if candidate_key in job["results"]:
                             continue
 
+                        candidate_status = job["status_map"].get(candidate_key)
+                        verification_count = len(
+                            job.get("verifications", {}).get(candidate_key, {})
+                        )
+
+                        # Allow reassignment while the chunk is not completed and
+                        # still needs independent verification votes.
+                        if candidate_status == "completed" or verification_count >= 2:
+                            continue
+
                         # Skip assigning the same verification chunk to a node
                         # that has already submitted a vote for it.
                         if node_id in job.get("verifications", {}).get(candidate_key, {}):
@@ -533,12 +548,12 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         chunk = candidate
 
                     if chunk is None:
-                        for verify_chunk_key, votes in job.get("verifications", {}).items():
+                        for verify_chunk_key in pending_verifications:
+
                             if verify_chunk_key in job["results"]:
                                 continue
-                            if len(votes) >= 2:
-                                continue
-                            if node_id in votes:
+
+                            if node_id in job.get("verifications", {}).get(verify_chunk_key, {}):
                                 continue
 
                             chunk = int(verify_chunk_key)
