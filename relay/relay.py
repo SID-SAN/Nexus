@@ -28,6 +28,7 @@ node_resources = {}
 node_last_seen = {}
 jobs = load_jobs()
 node_owner_map = {}
+credit_update_lock = asyncio.Lock()
 
 
 # -----------------------------
@@ -331,6 +332,8 @@ async def submit_job(
         "chunks": chunks,
         "queue": list(range(1, chunks + 1)),
         "results": {},
+        "verifications": {},
+        "rewarded_chunks": set(),
         "logs": {},
         "errors": {},
         "status_map": {},
@@ -400,7 +403,15 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 for jid, job in jobs.items():
 
-                    if job["status"] != "running" or not job["queue"]:
+                    if job["status"] != "running":
+                        continue
+
+                    pending_verifications = [
+                        c for c, votes in job.get("verifications", {}).items()
+                        if c not in job["results"] and len(votes) < 2
+                    ]
+
+                    if not job["queue"] and not pending_verifications:
                         continue
 
                     owner = job.get("owner")
@@ -439,17 +450,41 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 assigned = []
 
                 for _ in range(batch_size):
-                    if not job["queue"]:
+                    chunk = None
+
+                    while job["queue"] and chunk is None:
+                        candidate = job["queue"].pop(0)
+                        candidate_key = str(candidate)
+
+                        if candidate_key in job["results"]:
+                            continue
+
+                        # Skip assigning the same verification chunk to a node
+                        # that has already submitted a vote for it.
+                        if node_id in job.get("verifications", {}).get(candidate_key, {}):
+                            continue
+
+                        chunk = candidate
+
+                    if chunk is None:
+                        for verify_chunk_key, votes in job.get("verifications", {}).items():
+                            if verify_chunk_key in job["results"]:
+                                continue
+                            if len(votes) >= 2:
+                                continue
+                            if node_id in votes:
+                                continue
+
+                            chunk = int(verify_chunk_key)
+                            break
+
+                    if chunk is None:
                         break
 
-                    chunk = job["queue"].pop(0)
-
-                    if str(chunk) in job["results"]:
-                        continue
-
-                    job["status_map"][str(chunk)] = "running"
-                    job["assigned_at"][str(chunk)] = time.time()
-                    job["retries"].setdefault(str(chunk), 0)
+                    chunk_key = str(chunk)
+                    job["status_map"][chunk_key] = "running"
+                    job["assigned_at"][chunk_key] = time.time()
+                    job["retries"].setdefault(chunk_key, 0)
 
                     assigned.append(chunk)
 
@@ -551,38 +586,98 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     except:
                         val = None
 
-                job["results"][chunk_key] = val
+                verification_map = job.setdefault("verifications", {})
+                chunk_verify = verification_map.setdefault(chunk_key, {})
+
+                if node_id in chunk_verify:
+                    continue
+
+                chunk_verify[node_id] = val
+
+                verified_values = list(chunk_verify.values())
+
+                if len(verified_values) >= 2:
+
+                    if verified_values[0] == verified_values[1]:
+
+                        print(f"[Verified] chunk {chunk_key}")
+
+                        job["results"][chunk_key] = verified_values[0]
+                        job["status_map"][chunk_key] = "completed"
+
+                        # 🔥 NEW: REWARD SPLIT LOGIC
+                        price = job.get("price", 0)
+                        rewarded_chunks = job.setdefault("rewarded_chunks", set())
+
+                        if price > 0 and chunk_key not in rewarded_chunks:
+                            reward_per_chunk = price / job["chunks"]
+                            reward_per_node = round(reward_per_chunk / len(chunk_verify), 4)
+
+                            for node in chunk_verify.keys():
+                                user_id = node_owner_map.get(node)
+
+                                if not user_id:
+                                    continue
+
+                                try:
+                                    user = get_user_by_id(user_id)
+
+                                    if not user:
+                                        continue
+
+                                    api_key = user["api_key"].strip()
+
+                                    try:
+                                        supabase.rpc("increment_credits", {
+                                            "user_api_key": api_key,
+                                            "amount": reward_per_node
+                                        }).execute()
+                                    except Exception:
+                                        # fallback path if RPC is unavailable
+                                        async with credit_update_lock:
+                                            user = get_user_by_id(user_id)
+                                            if not user:
+                                                continue
+                                            api_key = user["api_key"].strip()
+                                            new_credits = user["credits"] + reward_per_node
+                                            update_user_credits_by_api_key(api_key, new_credits)
+
+                                    print(f"[Reward] {reward_per_node} -> node {node}")
+
+                                except Exception as e:
+                                    print("❌ Reward update failed:", e)
+                            rewarded_chunks.add(chunk_key)
+
+                        # clear verification/failed state after successful completion
+                        job.get("verifications", {}).pop(chunk_key, None)
+                        job.get("failed_nodes", {}).pop(chunk_key, None)
+
+                    else:
+                        print(f"[Mismatch] chunk {chunk_key}")
+                        job.setdefault("mismatch_count", 0)
+                        job["mismatch_count"] += 1
+
+                        # ❌ NO REWARD GIVEN
+                        # reset for retry
+                        job["verifications"][chunk_key] = {}
+
+                        if int(chunk_key) not in job["queue"]:
+                            job["queue"].append(int(chunk_key))
+
+                        job["status_map"][chunk_key] = "pending"
+                        job["updated_at"] = time.time()
+                        asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
+                        continue
+                else:
+                    # wait for second independent verification result
+                    job["status_map"][chunk_key] = "running"
+                    job["updated_at"] = time.time()
+                    asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
+                    continue
+
                 job["logs"][chunk_key] = payload.get("logs", "")
                 job["errors"][chunk_key] = payload.get("error", "")
-                job["status_map"][chunk_key] = "completed"
                 job["updated_at"] = time.time()
-
-                # 🔥 CREDIT REWARD LOGIC
-                sender_node_id = node_id
-                user_id = node_owner_map.get(sender_node_id)
-
-                if status == "success" and user_id:
-                    price = job.get("price", 0)
-
-                    if price > 0:
-                        reward = price / job["chunks"]
-                        
-                        try:
-                            user = get_user_by_id(user_id)
-
-                            if not user:
-                                print("❌ User not found in DB")
-                                continue
-                            
-                            api_key = user["api_key"].strip()
-
-                            print("DEBUG API KEY USED:", api_key)
-                            update_user_credits_by_api_key(api_key, user["credits"] + reward)
-                            
-                        except Exception as e:
-                            print("❌ Credit update failed:", e)
-                    else:
-                        print("⚠️ No price set for job, skipping reward")
                 
 
                 completed_chunks = [

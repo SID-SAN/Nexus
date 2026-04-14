@@ -35,4 +35,8 @@ def load_jobs():
                 if isinstance(nodes, list):
                     failed_nodes[chunk] = set(nodes)
 
+        rewarded_chunks = job.get("rewarded_chunks")
+        if isinstance(rewarded_chunks, list):
+            job["rewarded_chunks"] = set(rewarded_chunks)
+
     return jobs
