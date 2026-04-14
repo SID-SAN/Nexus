@@ -1,16 +1,34 @@
 import argparse
 import os
-import uvicorn
+import asyncio
 import uuid
-import socket
+import sys
+
+from relay_client import connect_to_relay
+from resource_monitor import resource_monitor_loop
 
 
-def get_free_port():
-    s = socket.socket()
-    s.bind(('', 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+def start_node(node_id, api_key):
+    os.environ["NODE_ID"] = node_id
+    os.environ["API_KEY"] = api_key
+
+    print("\n=====================================")
+    print("        🚀 NEXUS NODE STARTING       ")
+    print("=====================================")
+    print(f"Node ID   : {node_id}")
+    print(f"API Key   : {api_key[:6]}***")
+    print("=====================================\n")
+
+    async def runner():
+        await asyncio.gather(
+            connect_to_relay(),
+            resource_monitor_loop()
+        )
+
+    try:
+        asyncio.run(runner())
+    except KeyboardInterrupt:
+        print("\n[CLI] Node stopped manually")
 
 
 def main():
@@ -40,35 +58,11 @@ def main():
 
     args = parser.parse_args()
 
-    # -----------------------------
-    # START NODE
-    # -----------------------------
     if args.command == "start":
 
         node_id = args.node_id or f"node_{uuid.uuid4().hex[:6]}"
-        PORT = get_free_port()
 
-        # 🔥 ENV SETUP
-        os.environ["PORT"] = str(PORT)
-        os.environ["NODE_ID"] = node_id
-        os.environ["API_KEY"] = args.api_key
-
-        print("\n=====================================")
-        print("        🚀 NEXUS NODE STARTING       ")
-        print("=====================================")
-        print(f"Node ID   : {node_id}")
-        print(f"Port      : {PORT}")
-        print(f"API Key   : {args.api_key[:6]}***")
-        print("=====================================\n")
-
-        # 🔥 import AFTER env is set
-        from node_server import app
-
-        uvicorn.run(
-            app,
-            host="0.0.0.0",
-            port=PORT
-        )
+        start_node(node_id, args.api_key)
 
     else:
         parser.print_help()

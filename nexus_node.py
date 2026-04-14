@@ -1,35 +1,27 @@
 import argparse
 import os
-import subprocess
-import socket
+import asyncio
 
+from relay_client import connect_to_relay
+from resource_monitor import resource_monitor_loop
 
-def get_free_port():
-    s = socket.socket()
-    s.bind(('', 0))  # auto-assign free port
-    port = s.getsockname()[1]
-    s.close()
-    return port
 
 def start_node(node_id, api_key):
     os.environ["NODE_ID"] = node_id
     os.environ["API_KEY"] = api_key
 
-    port = get_free_port()
-    os.environ["PORT"] = str(port)
-    print(f"[CLI] Starting node {node_id} on port {port}")
+    print(f"[CLI] Starting node {node_id}")
 
-    subprocess.run([
-        "uvicorn",
-        "node_server:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        str(port)
-    ])
+    async def runner():
+        await asyncio.gather(
+            connect_to_relay(),
+            resource_monitor_loop()
+        )
+
+    asyncio.run(runner())
+
 
 def main():
-
     parser = argparse.ArgumentParser(prog="nexus-node")
 
     parser.add_argument(

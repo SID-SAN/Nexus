@@ -19,6 +19,8 @@ def download_job(job_id):
     url = f"{RELAY_URL}/jobs/{job_id}"
 
     r = requests.get(url)
+    if r.status_code != 200:
+        raise Exception("Failed to download job")
 
     with open(zip_path, "wb") as f:
         f.write(r.content)

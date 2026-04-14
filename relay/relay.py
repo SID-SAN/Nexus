@@ -424,19 +424,16 @@ async def submit_job(
 @app.websocket("/ws/{node_id}")
 async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
-    print("🔥 AUTH BLOCK EXECUTING")   # ADD THIS
-
-    await websocket.accept()
 
     api_key = websocket.query_params.get("api_key")
-
-    print("DEBUG API KEY:", api_key)
     user = get_user_by_api_key(api_key)
 
     if not user:
         print("❌ INVALID API KEY")
-        await websocket.close()
+        await websocket.close(code=1008)
         return
+
+    await websocket.accept()
 
     user_id = user["user_id"]
     node_owner_map[node_id] = user_id

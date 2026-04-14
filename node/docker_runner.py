@@ -26,13 +26,11 @@ def _ensure_deps_installed(extract_path):
 
 def run_in_docker(job_id, args):
     extract_path = os.path.abspath(f"jobs/{job_id}")
-    container_name = f"nexus_job_{uuid.uuid4().hex[:8]}"
     arg_text = " ".join([shlex.quote(str(a)) for a in args])
 
     cmd = [
         "docker", "run",
         "--rm",
-        "--name", container_name,
         "--network", "none",
         "--cpus=0.5",
         "--memory=512m",

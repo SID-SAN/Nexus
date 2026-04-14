@@ -15,8 +15,6 @@ RELAY_URL = f"wss://nexus-relay-5wog.onrender.com/ws/{NODE_ID}?api_key={API_KEY}
 RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
 
 websocket_connection = None
-pending_results = {}
-job_cache = {}
 active_chunks = 0
 request_in_flight = False
 
@@ -29,53 +27,6 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
 # -----------------------------
 # 🔥 BACKGROUND EXECUTION
 # -----------------------------
-
-async def run_single_chunk(job_id, chunk, total_chunks, chunk_data=None):
-
-    global websocket_connection, active_chunks
-
-    async with semaphore:
-
-        print(f"[V4] Running chunk {chunk}")
-        try:
-            exec_output = await asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data or {})
-
-            status = exec_output.get("status", "success") if exec_output else "failed"
-            error_msg = exec_output.get("error") if exec_output else "Execution failed"
-
-            response = {
-                "type": "submit_result",
-                "source": NODE_ID,
-                "payload": {
-                    "job_id": job_id,
-                    "chunk": chunk,
-                    "status": status,
-                    "result": exec_output.get("result") if exec_output else None,
-                    "logs": exec_output.get("logs", "") if exec_output else "",
-                    "error": error_msg
-                }
-            }
-        except Exception as e:
-            response = {
-                "type": "submit_result",
-                "source": NODE_ID,
-                "payload": {
-                    "job_id": job_id,
-                    "chunk": chunk,
-                    "status": "failed",
-                    "result": None,
-                    "logs": "",
-                    "error": str(e)
-                }
-            }
-        finally:
-            active_chunks -= 1
-
-        await send_queue.put(response)
-        print("[Node] Queued result:", response)
-        print(f"[V4] Submitted chunk {chunk}")
-
-
 async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
 
     try:
@@ -252,29 +203,6 @@ async def connect_to_relay():
                             execute_chunk_batch(job_id, chunks, total_chunks, chunk_data)
                         )
 
-                    # -----------------------------
-                    # V3 compatibility
-                    # -----------------------------
-                    elif msg_type == "execute_task":
-
-                        payload = data["payload"]
-                        task = payload["task"]
-                        start = payload["start"]
-                        end = payload["end"]
-
-                        from tasks_registry import get_task
-                        task_function = get_task(task)
-
-                        result = task_function(start, end) if task_function else None
-
-                        response = {
-                            "target": data["source"],
-                            "source": NODE_ID,
-                            "type": "task_result",
-                            "payload": {"result": result}
-                        }
-
-                        await send_queue.put(response)
 
                     # -----------------------------
                     # Heartbeat
@@ -285,16 +213,6 @@ async def connect_to_relay():
                             "type": "heartbeat_ack",
                             "source": NODE_ID
                         })
-
-                    # -----------------------------
-                    # Task results (v3)
-                    # -----------------------------
-                    elif msg_type in ("chunk_result", "task_result"):
-
-                        source = data["source"]
-                        result = data["payload"]["result"]
-
-                        pending_results[source] = result
 
         except Exception as e:
 

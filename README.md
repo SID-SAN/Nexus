@@ -1,191 +1,258 @@
-# Nexus v4.2.0
+# Nexus v4.3.0
 
-### Distributed Compute Platform with Credit Economy & Intelligent Scheduling
+### Generic Distributed Compute Platform with Docker Sandbox & Verification Engine
 
-Nexus is a lightweight distributed computing framework that enables multiple machines (nodes) to collaboratively execute computational tasks over the internet.
+Nexus is a lightweight distributed computing framework that enables multiple machines (nodes) to collaboratively execute **arbitrary user-defined code** over the internet.
 
-With **v4.2.0**, Nexus evolves into a **reliable, user-aware compute platform** with improved scheduling, job lifecycle management, and enhanced execution visibility.
-
----
-
-# Key Highlights (v4.2.0)
-
-## Distributed Execution Engine
-
-* Parallel task execution across multiple nodes
-* Map-Reduce inspired architecture
-* Automatic chunking & aggregation
+With **v4.3.0**, Nexus evolves into a **secure, generic, and verifiable compute platform**, capable of running any workload using containerized execution and multi-node validation.
 
 ---
 
-## Internet-Ready Network
+# Key Highlights (v4.3.0)
 
-* Nodes connect from different machines/networks
-* Central relay for coordination
-* WebSocket-based communication
+## Generic Execution Engine
+
+- Run **any user-defined code** via `task.py`
+- No hardcoded task types
+- Fully flexible compute model
+- Supports simulations, data processing, and custom workloads
+
+---
+
+##Docker Sandboxed Execution
+
+- Each chunk runs inside a **Docker container**
+- CPU & memory limits enforced
+- Network isolation (`--network none`)
+- Safe execution of untrusted code
+
+---
+
+## Multi-Node Verification System
+
+- Each chunk is executed on **multiple nodes**
+- Results must match before acceptance
+- Automatic retry on mismatch
+- Prevents fake results / credit exploitation
+
+---
+
+## Smart Chunking System
+
+Supports multiple chunking strategies:
+
+- Range-based
+- File-based
+- Default chunk IDs
+
+Configured via `config.json`
 
 ---
 
 ## Credit-Based Economy
 
-* Users pay credits to submit jobs
-* Nodes earn credits per completed chunk
-* Automatic refund on job cancellation
-* Real-time credit tracking via dashboard
+- Users pay credits to submit jobs
+- Nodes earn credits per verified chunk
+- Rewards split across verifying nodes
+- Refunds for cancelled jobs
 
 ---
 
 ## Multi-User System
 
-* Email + password login
-* API key-based authentication
-* Multiple users supported simultaneously
+- Email + password authentication
+- API key-based access
+- Per-user job isolation
+- Secure job ownership & cancellation
 
 ---
 
-## Smarter Scheduling
+## Intelligent Scheduler (Upgraded)
 
-* Progress-aware job selection
-* Size-aware prioritization (faster completion of small jobs)
-* Randomized scoring to prevent job starvation
-* Adaptive batch allocation based on node capacity
+- Progress-aware job prioritization
+- Fairness across users
+- Load-aware scheduling
+- Duplicate chunk assignment for verification
+- Prevents starvation & stuck jobs
 
 ---
 
-## Job Lifecycle Management
+## Fault Tolerance & Retry System
 
-* Cancel running jobs anytime
-* Automatic refund for unused work
-* Failed job detection (after retry exhaustion)
-* Clean job termination (no stuck jobs)
+- Automatic retry on:
+  - Node failure
+  - Timeout
+  - Execution error
+- Max retry limit enforcement
+- Job-level failure detection
 
 ---
 
 ## Execution Insights
 
-* Real-time progress tracking
-* Job duration tracking (accurate lifecycle timing)
-* Execution speed (chunks/sec)
-* Per-chunk logs and error visibility
+- Real-time job progress
+- Chunk-level logs & errors
+- Job duration tracking
+- Execution speed (chunks/sec)
 
 ---
 
 ## Real-Time Dashboard
 
-* Submit jobs via web UI
-* Monitor nodes & cluster
-* Track job progress and logs
-* View credit balance
+- Submit jobs via UI
+- Monitor cluster & nodes
+- View logs and results
+- Track credits
 
 ---
 
 ## Executable Node
 
-* Run nodes using `.exe` (no Python required)
-* Simple CLI interface
-* Easy deployment across machines
+- Run nodes via `.exe` (no Python required)
+- Simple CLI interface
+- Plug-and-play setup
 
 ---
 
 # Architecture
 
-## Relay Server (FastAPI)
+## 🔹 Relay Server (FastAPI)
 
-Central coordinator for the network.
+Central coordinator.
 
 ### Responsibilities:
 
-* Accept job submissions
-* Split jobs into chunks
-* Assign work to nodes
-* Track execution state
-* Aggregate results
-* Manage user credits
+- Accept job submissions
+- Parse job config & generate chunks
+- Assign work to nodes
+- Track execution & verification
+- Aggregate results
+- Manage credits
 
 ---
 
-## Worker Nodes
+## 🔹 Worker Nodes
 
 Distributed compute units.
 
 ### Features:
 
-* Connect via WebSocket
-* Execute chunks in parallel
-* Send results + logs
-* Earn credits
+- Connect via WebSocket
+- Execute chunks inside Docker
+- Send results + logs
+- Participate in verification
+- Earn credits
 
 ---
 
-## Dashboard (Frontend)
+## 🔹 Dashboard (Frontend)
 
-User interface for interacting with the system.
+User interface.
 
 ### Features:
 
-* User login
-* Job submission
-* Cluster monitoring
-* Credit tracking
-* Live job updates
+- User login
+- Job submission
+- Cluster monitoring
+- Live job tracking
+- Credit management
 
 ---
 
 # Execution Flow
 
-1. User logs in
-2. User uploads `job.zip` at
-   ```
-   https://nexus-relay-5wog.onrender.com/dashboard
-   ```
+1. User logs in  
+2. Uploads `job.zip` via dashboard  
 3. Relay:
-
-   * deducts credits
-   * splits job into chunks
+   - deducts credits
+   - parses config
+   - generates chunks  
 4. Nodes:
-
-   * request work
-   * execute chunks
-   * send results
+   - request chunks
+   - execute in Docker
+   - return results  
 5. Relay:
-
-   * aggregates results
-   * distributes credits to nodes
-6. Dashboard updates in real-time
+   - verifies results (multi-node)
+   - retries if mismatch
+   - distributes rewards  
+6. Job completes → result aggregated  
 
 ---
 
 # Job Format
 
-Each job must include a `main.py` file:
-
-```python
-def run(chunk_id, total_chunks):
-    return result
 ```
 
-OR CLI-style:
+job.zip
+├── task.py
+├── config.json (optional)
+└── requirements.txt (optional)
+
+````
+
+---
+
+## 🔹 task.py (Required)
 
 ```python
-if __name__ == "__main__":
-    # execute logic
+import sys
+
+chunk = int(sys.argv[1])
+
+# your logic here
+print(result)
+````
+
+---
+
+## 🔹 config.json (Optional)
+
+### Range-based
+
+```json
+{
+  "chunk_type": "range",
+  "start": 0,
+  "end": 100000,
+  "chunk_size": 1000
+}
 ```
 
-### Important:
+### File-based
 
-* The **last printed line = result**
-* All previous prints = logs
+```json
+{
+  "chunk_type": "file_list",
+  "files": ["file1.csv", "file2.csv"]
+}
+```
+
+---
+
+## 🔹 requirements.txt (Optional)
+
+```
+numpy
+pandas
+```
+
+Dependencies are installed once per job.
 
 ---
 
 # Core Model
 
-Nexus follows a **MAP → REDUCE** pattern:
+Nexus follows a:
 
-* Each chunk processes part of data
-* Final result is aggregated
+**MAP → VERIFY → REDUCE**
 
-### Supported Reducers:
+* Map → execute chunks
+* Verify → validate across nodes
+* Reduce → aggregate results
+
+---
+
+## Supported Reducers
 
 * `sum`
 * `avg`
@@ -197,13 +264,11 @@ Nexus follows a **MAP → REDUCE** pattern:
 
 # Running a Node
 
-## Using EXE (Recommended)
+## Using EXE
 
 ```bash
 nexus-node.exe start --node-id PC_1 --api-key YOUR_API_KEY
 ```
-
----
 
 ## Using Python
 
@@ -218,7 +283,7 @@ python nexus_node.py start --node-id PC_1 --api-key YOUR_API_KEY
 1. Open dashboard
 2. Create account
 3. Login
-4. API key is handled automatically
+4. API key is auto-managed
 
 ---
 
@@ -226,11 +291,11 @@ python nexus_node.py start --node-id PC_1 --api-key YOUR_API_KEY
 
 ```
 Nexus/
-├── relay/          # FastAPI relay server
-├── node/           # Worker node logic
-├── dashboard/      # Frontend UI
-├── nexus_node.py   # CLI entry point
-├── dist/           # EXE build output
+├── relay/
+├── node/
+├── frontend/
+├── nexus_node.py
+├── dist/
 └── README.md
 ```
 
@@ -238,34 +303,32 @@ Nexus/
 
 # Current Limitations
 
-* Single relay server (centralized)
-* No GPU scheduling
-* Basic scheduling heuristics
-* No advanced security (yet)
+* Single relay (centralized)
+* No GPU scheduling yet
+* Basic reducers
+* No distributed storage
 
 ---
 
 # Roadmap
 
-* CLI improvements & config system
-* Better packaging & distribution
-* Real-time updates (remove polling)
-* Multi-relay architecture
 * GPU compute support
-* Distributed storage layer
+* Advanced scheduling
+* Multi-relay architecture
+* Distributed storage
+* Job marketplace
+* P2P node discovery
 
 ---
 
 # Vision
 
-> Build a decentralized, accessible, and intelligent compute network
+> Build a decentralized, secure, and intelligent compute network
 > where anyone can contribute compute and earn.
 
 ---
 
 # Contributing
-
-Contributions are welcome!
 
 * Open issues
 * Suggest features
@@ -273,8 +336,8 @@ Contributions are welcome!
 
 ---
 
-# Final Note
+# ⭐ Final Note
 
-Nexus v4.2.0 transforms the system into a **reliable distributed compute platform** with intelligent scheduling, proper lifecycle control, and real economic incentives.
+Nexus v4.3.0 transforms the system into a **secure, generic distributed compute platform** with real-world execution capabilities.
 
 If you found this interesting, consider ⭐ starring the repo!
