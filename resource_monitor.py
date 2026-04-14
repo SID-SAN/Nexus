@@ -1,8 +1,12 @@
 import asyncio
 import json
+import os
 import psutil
 import relay_client
-from config import NODE_ID
+
+
+def get_node_id():
+    return os.getenv("NODE_ID", "node_default")
 
 
 async def resource_monitor_loop():
@@ -28,7 +32,7 @@ async def resource_monitor_loop():
 
             message = {
                 "type": "resource_update",
-                "source": NODE_ID,
+                "source": get_node_id(),
                 "payload": {
                     "cpu": cpu_usage,
                     "ram": ram_usage

@@ -2,17 +2,35 @@ import asyncio
 import websockets
 import json
 import os
-import time
+from urllib.parse import quote
 
-from config import NODE_ID
 from node.downloader import download_job
 from node.executor import execute_chunk
 import aiohttp
 
-API_KEY = os.getenv("API_KEY")
+DEFAULT_RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
 
-RELAY_URL = f"wss://nexus-relay-5wog.onrender.com/ws/{NODE_ID}?api_key={API_KEY}"
-RELAY_HTTP_URL = "https://nexus-relay-5wog.onrender.com"
+
+def get_node_id():
+    return os.getenv("NODE_ID", "node_default")
+
+
+def get_api_key():
+    return os.getenv("API_KEY")
+
+
+def get_relay_http_url():
+    return os.getenv("RELAY_HTTP_URL", DEFAULT_RELAY_HTTP_URL).rstrip("/")
+
+
+def get_relay_ws_url(node_id, api_key):
+    relay_base = get_relay_http_url()
+    if relay_base.startswith("https://"):
+        relay_base = "wss://" + relay_base[len("https://"):]
+    elif relay_base.startswith("http://"):
+        relay_base = "ws://" + relay_base[len("http://"):]
+
+    return f"{relay_base}/ws/{quote(node_id)}?api_key={quote(api_key)}"
 
 websocket_connection = None
 active_chunks = 0
@@ -22,7 +40,6 @@ send_queue = asyncio.Queue()
 work_loop_started = False
 
 MAX_CONCURRENT_CHUNKS = 2
-semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
 
 # -----------------------------
 # 🔥 BACKGROUND EXECUTION
@@ -33,7 +50,7 @@ async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
         global active_chunks
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{RELAY_HTTP_URL}/job_status/{job_id}") as resp:
+            async with session.get(f"{get_relay_http_url()}/job_status/{job_id}") as resp:
 
                 if resp.status != 200:
                     print(f"[V4] Invalid response: {await resp.text()}")
@@ -63,7 +80,7 @@ async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
                 )
                 response = {
                     "type": "submit_result",
-                    "source": NODE_ID,
+                    "source": get_node_id(),
                     "payload": {
                         "job_id": job_id,
                         "chunk": chunk,
@@ -76,7 +93,7 @@ async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
             except asyncio.TimeoutError:
                 response = {
                     "type": "submit_result",
-                    "source": NODE_ID,
+                    "source": get_node_id(),
                     "payload": {
                         "job_id": job_id,
                         "chunk": chunk,
@@ -89,7 +106,7 @@ async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
             except Exception as e:
                 response = {
                     "type": "submit_result",
-                    "source": NODE_ID,
+                    "source": get_node_id(),
                     "payload": {
                         "job_id": job_id,
                         "chunk": chunk,
@@ -145,14 +162,24 @@ async def connect_to_relay():
     while True:
 
         try:
+            node_id = get_node_id()
+            api_key = get_api_key()
+
+            if not api_key:
+                print("[Relay] API_KEY is not set. Waiting before reconnect...")
+                await asyncio.sleep(2)
+                continue
+
+            relay_url = get_relay_ws_url(node_id, api_key)
+
             async with websockets.connect(
-                RELAY_URL,
+                relay_url,
                 ping_interval=20,
                 ping_timeout=20
             ) as websocket:
 
                 websocket_connection = websocket
-                print(f"[Relay] Connected as {NODE_ID}")
+                print(f"[Relay] Connected as {node_id}")
                 connect_to_relay.retry_count = 0
 
                 if not work_loop_started:
@@ -211,7 +238,7 @@ async def connect_to_relay():
 
                         await send_queue.put({
                             "type": "heartbeat_ack",
-                            "source": NODE_ID
+                            "source": get_node_id()
                         })
 
         except Exception as e:
@@ -237,8 +264,6 @@ async def connect_to_relay():
 # -----------------------------
 async def request_work_loop():
 
-    idle_counter = 0
-
     while True:
 
         if websocket_connection is None:
@@ -251,7 +276,7 @@ async def request_work_loop():
 
             request = {
                 "type": "request_chunk",
-                "source": NODE_ID
+                "source": get_node_id()
             }
 
             try:
