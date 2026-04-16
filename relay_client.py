@@ -7,9 +7,9 @@ from urllib.parse import quote
 from node.downloader import download_job
 from node.executor import execute_chunk
 import aiohttp
-from config import RELAY_URL
+from config import RELAY_URLS
 
-DEFAULT_RELAY_HTTP_URL = RELAY_URL
+DEFAULT_RELAY_HTTP_URL = RELAY_URLS
 
 
 def get_node_id():
@@ -20,12 +20,13 @@ def get_api_key():
     return os.getenv("API_KEY")
 
 
-def get_relay_http_url():
-    return os.getenv("RELAY_HTTP_URL", DEFAULT_RELAY_HTTP_URL).rstrip("/")
+def get_relay_http_url(base_url):
+    return base_url.rstrip("/")
 
 
-def get_relay_ws_url(node_id, api_key):
-    relay_base = get_relay_http_url()
+def get_relay_ws_url(base_url, node_id, api_key):
+    relay_base = base_url
+
     if relay_base.startswith("https://"):
         relay_base = "wss://" + relay_base[len("https://"):]
     elif relay_base.startswith("http://"):
@@ -162,102 +163,90 @@ async def connect_to_relay():
 
     while True:
 
-        try:
-            node_id = get_node_id()
-            api_key = get_api_key()
+        node_id = get_node_id()
+        api_key = get_api_key()
 
-            if not api_key:
-                print("[Relay] API_KEY is not set. Waiting before reconnect...")
-                await asyncio.sleep(2)
-                continue
+        if not api_key:
+            print("[Relay] API_KEY is not set. Waiting...")
+            await asyncio.sleep(2)
+            continue
 
-            relay_url = get_relay_ws_url(node_id, api_key)
+        for base_url in RELAY_URLS:
 
-            async with websockets.connect(
-                relay_url,
-                ping_interval=20,
-                ping_timeout=20
-            ) as websocket:
+            try:
+                relay_url = get_relay_ws_url(base_url, node_id, api_key)
 
-                websocket_connection = websocket
-                print(f"[Relay] Connected as {node_id}")
-                connect_to_relay.retry_count = 0
+                print(f"[Relay] Trying {base_url}")
 
-                if not work_loop_started:
-                    asyncio.create_task(request_work_loop())
-                    asyncio.create_task(sender_loop())
-                    work_loop_started = True
+                async with websockets.connect(
+                    relay_url,
+                    ping_interval=20,
+                    ping_timeout=20
+                ) as websocket:
 
-                while True:
+                    websocket_connection = websocket
+                    print(f"[Relay] Connected to {base_url} as {node_id}")
 
-                    message = await websocket.recv()
-                    data = json.loads(message)
+                    if not work_loop_started:
+                        asyncio.create_task(request_work_loop())
+                        asyncio.create_task(sender_loop())
+                        work_loop_started = True
 
-                    msg_type = data.get("type")
+                    while True:
 
-                    # -----------------------------
-                    # SINGLE CHUNK
-                    # -----------------------------
-                    if msg_type == "assign_chunk":
-                        request_in_flight = False
+                        message = await websocket.recv()
+                        data = json.loads(message)
 
-                        payload = data["payload"]
-                        job_id = payload["job_id"]
-                        chunk = payload["chunk"]
-                        total_chunks = payload["total_chunks"]
-                        chunk_data = payload.get("chunk_data", {})
+                        msg_type = data.get("type")
 
-                        print(f"[V4] Assigned chunk {chunk}/{total_chunks}")
+                        # -----------------------------
+                        # SAME EXISTING LOGIC
+                        # -----------------------------
+                        if msg_type == "assign_chunk":
+                            request_in_flight = False
 
-                        asyncio.create_task(
-                            execute_chunk_batch(job_id, [chunk], total_chunks, chunk_data)
-                        )
+                            payload = data["payload"]
+                            job_id = payload["job_id"]
+                            chunk = payload["chunk"]
+                            total_chunks = payload["total_chunks"]
+                            chunk_data = payload.get("chunk_data", {})
 
-                    # -----------------------------
-                    # BATCH CHUNKS
-                    # -----------------------------
-                    elif msg_type == "assign_chunk_batch":
-                        request_in_flight = False
+                            print(f"[V5] Assigned chunk {chunk}/{total_chunks}")
 
-                        payload = data["payload"]
-                        job_id = payload["job_id"]
-                        chunks = payload["chunks"]
-                        total_chunks = payload["total_chunks"]
-                        chunk_data = payload.get("chunk_data", {})
+                            asyncio.create_task(
+                                execute_chunk_batch(job_id, [chunk], total_chunks, chunk_data)
+                            )
 
-                        print(f"[V4] Batch assigned {len(chunks)} chunks")
+                        elif msg_type == "assign_chunk_batch":
+                            request_in_flight = False
 
-                        asyncio.create_task(
-                            execute_chunk_batch(job_id, chunks, total_chunks, chunk_data)
-                        )
+                            payload = data["payload"]
+                            job_id = payload["job_id"]
+                            chunks = payload["chunks"]
+                            total_chunks = payload["total_chunks"]
+                            chunk_data = payload.get("chunk_data", {})
 
+                            print(f"[V5] Batch assigned {len(chunks)} chunks")
 
-                    # -----------------------------
-                    # Heartbeat
-                    # -----------------------------
-                    elif msg_type == "heartbeat":
+                            asyncio.create_task(
+                                execute_chunk_batch(job_id, chunks, total_chunks, chunk_data)
+                            )
 
-                        await send_queue.put({
-                            "type": "heartbeat_ack",
-                            "source": get_node_id()
-                        })
+                        elif msg_type == "heartbeat":
 
-        except Exception as e:
+                            await send_queue.put({
+                                "type": "heartbeat_ack",
+                                "source": get_node_id()
+                            })
 
-            if websocket_connection is not None:
-                print(f"[Relay] Connection lost: {e}")
+            except Exception as e:
 
-            websocket_connection = None
+                print(f"[Relay] Failed {base_url}: {e}")
 
-            if not hasattr(connect_to_relay, "retry_count"):
-                connect_to_relay.retry_count = 0
+                websocket_connection = None
 
-            connect_to_relay.retry_count += 1
-            wait_time = min(10, 2 ** connect_to_relay.retry_count)
-
-            print(f"[Relay] Reconnecting in {wait_time}s...")
-
-            await asyncio.sleep(wait_time)
+        print("[Relay] All relays failed. Retrying in 3s...\n")
+        await asyncio.sleep(3)
 
 
 # -----------------------------

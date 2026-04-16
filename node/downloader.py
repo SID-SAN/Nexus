@@ -3,21 +3,21 @@
 import requests
 import zipfile
 import os
-
-RELAY_URL = "https://nexus-wr6s.onrender.com"
+from config import RELAY_URLS
 
 JOB_DIR = "jobs"
 
 os.makedirs(JOB_DIR, exist_ok=True)
 
+def get_active_relay():
+    return RELAY_URLS[0]
 
 def download_job(job_id):
 
     zip_path = os.path.join(JOB_DIR, f"{job_id}.zip")
     extract_path = os.path.join(JOB_DIR, job_id)
 
-    url = f"{RELAY_URL}/jobs/{job_id}"
-
+    url = f"{get_active_relay()}/jobs/{job_id}"
     r = requests.get(url)
     if r.status_code != 200:
         raise Exception("Failed to download job")
