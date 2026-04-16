@@ -2,6 +2,7 @@ import asyncio
 import websockets
 import json
 import os
+import time
 from urllib.parse import quote
 
 from node.downloader import download_job
@@ -42,11 +43,18 @@ websocket_connection = None
 active_chunks = 0
 request_in_flight = False
 known_peers = set()
+job_cache = {}
 
 send_queue = asyncio.Queue()
 work_loop_started = False
 
 MAX_CONCURRENT_CHUNKS = 2
+
+
+async def cleanup_job(job_id):
+    await asyncio.sleep(60)  # wait a bit
+    job_cache.pop(job_id, None)
+    print(f"[Cache] Cleaned job {job_id}")
 
 # -----------------------------
 # 🔥 BACKGROUND EXECUTION
@@ -57,26 +65,38 @@ async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
         global active_chunks
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{get_relay_http_url()}/job_status/{job_id}") as resp:
+            try:
+                async with session.get(f"{get_relay_http_url()}/job_status/{job_id}") as resp:
 
-                if resp.status != 200:
-                    print(f"[V4] Invalid response: {await resp.text()}")
-                    return
+                    if resp.status != 200:
+                        print(f"[V4] Invalid response: {await resp.text()}")
+                        return
 
-                status_data = await resp.json()
-                status = status_data.get("status")
+                    status_data = await resp.json()
+                    status = status_data.get("status")
 
-                if not status:
-                    print(f"[V4] Invalid response: {status_data}")
-                    return
+                    if not status:
+                        print(f"[V4] Invalid response: {status_data}")
+                        return
 
-                if status == "cancelled":
-                    print("[V4] Job cancelled, skipping batch")
-                    return
+                    if status == "cancelled":
+                        print("[V4] Job cancelled, skipping batch")
+                        return
+            except Exception:
+                print("[V5] Relay unavailable, using local cache")
+                if job_id in job_cache:
+                    status = job_cache[job_id].get("status", "running")
+                    if status == "completed":
+                        print("[V5] Job already completed locally")
+                        return
 
         # ensure job package exists locally
-        if not os.path.exists(f"jobs/{job_id}.zip") and not os.path.exists(f"jobs/{job_id}"):
-            download_job(job_id)
+        try:
+            if not os.path.exists(f"jobs/{job_id}.zip") and not os.path.exists(f"jobs/{job_id}"):
+                download_job(job_id)
+        except Exception:
+            print("[V5] Cannot download job (relay down), skipping")
+            return
 
         for chunk in chunks:
             active_chunks += 1
@@ -125,6 +145,20 @@ async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
                 }
             finally:
                 active_chunks -= 1
+
+            job_id_resp = response["payload"]["job_id"]
+            chunk_resp = response["payload"]["chunk"]
+            if job_id_resp in job_cache:
+                job_cache[job_id_resp]["chunks"].discard(chunk_resp)
+                job_cache[job_id_resp]["last_updated"] = time.time()
+
+                if not job_cache[job_id_resp]["chunks"]:
+                    job_cache[job_id_resp]["status"] = "completed"
+                    if not job_cache[job_id_resp].get("cleanup_scheduled"):
+                        job_cache[job_id_resp]["cleanup_scheduled"] = True
+                        asyncio.create_task(cleanup_job(job_id_resp))
+
+                print(f"[Cache] {job_id_resp}: {job_cache[job_id_resp]}")
 
             await send_queue.put(response)
             print("[Node] Queued result:", response)
@@ -220,6 +254,17 @@ async def connect_to_relay():
                             total_chunks = payload["total_chunks"]
                             chunk_data = payload.get("chunk_data", {})
 
+                            job_cache.setdefault(job_id, {
+                                "chunks": set(),
+                                "status": "running",
+                                "cleanup_scheduled": False
+                            })
+                            job_cache[job_id]["status"] = "running"
+                            job_cache[job_id]["cleanup_scheduled"] = False
+                            job_cache[job_id]["chunks"].add(chunk)
+                            job_cache[job_id]["last_updated"] = time.time()
+                            print(f"[Cache] {job_id}: {job_cache[job_id]}")
+
                             print(f"[V5] Assigned chunk {chunk}/{total_chunks}")
 
                             asyncio.create_task(
@@ -234,6 +279,17 @@ async def connect_to_relay():
                             chunks = payload["chunks"]
                             total_chunks = payload["total_chunks"]
                             chunk_data = payload.get("chunk_data", {})
+
+                            job_cache.setdefault(job_id, {
+                                "chunks": set(),
+                                "status": "running",
+                                "cleanup_scheduled": False
+                            })
+                            job_cache[job_id]["status"] = "running"
+                            job_cache[job_id]["cleanup_scheduled"] = False
+                            job_cache[job_id]["chunks"].update(chunks)
+                            job_cache[job_id]["last_updated"] = time.time()
+                            print(f"[Cache] {job_id}: {job_cache[job_id]}")
 
                             print(f"[V5] Batch assigned {len(chunks)} chunks")
 
@@ -250,8 +306,8 @@ async def connect_to_relay():
 
                         elif msg_type == "peer_list":
                             peers = data.get("nodes", [])
-                            node_id = get_node_id()
-                            peers = [peer for peer in peers if peer != node_id]
+                            self_id = get_node_id()
+                            peers = [peer for peer in peers if peer != self_id]
                             old_peers = known_peers.copy()
 
                             known_peers = set(peers)
@@ -313,4 +369,5 @@ async def request_work_loop():
 
         sleep_time = 2 if active_chunks == 0 else 4
         await asyncio.sleep(sleep_time)
+
 
