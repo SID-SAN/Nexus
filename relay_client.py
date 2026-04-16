@@ -11,7 +11,6 @@ from config import RELAY_URLS
 
 DEFAULT_RELAY_HTTP_URL = RELAY_URLS
 
-
 def get_node_id():
     return os.getenv("NODE_ID", "node_default")
 
@@ -20,8 +19,13 @@ def get_api_key():
     return os.getenv("API_KEY")
 
 
-def get_relay_http_url(base_url):
-    return base_url.rstrip("/")
+current_relay = None
+
+
+def get_relay_http_url():
+    if not current_relay:
+        raise Exception("No active relay connection")
+    return current_relay.rstrip("/")
 
 
 def get_relay_ws_url(base_url, node_id, api_key):
@@ -37,6 +41,7 @@ def get_relay_ws_url(base_url, node_id, api_key):
 websocket_connection = None
 active_chunks = 0
 request_in_flight = False
+known_peers = set()
 
 send_queue = asyncio.Queue()
 work_loop_started = False
@@ -160,6 +165,8 @@ async def connect_to_relay():
     global request_in_flight
     global websocket_connection
     global work_loop_started
+    global current_relay
+    global known_peers
 
     while True:
 
@@ -185,6 +192,8 @@ async def connect_to_relay():
                 ) as websocket:
 
                     websocket_connection = websocket
+                    current_relay = base_url
+                    os.environ["RELAY_HTTP_URL"] = base_url
                     print(f"[Relay] Connected to {base_url} as {node_id}")
 
                     if not work_loop_started:
@@ -239,11 +248,30 @@ async def connect_to_relay():
                                 "source": get_node_id()
                             })
 
+                        elif msg_type == "peer_list":
+                            peers = data.get("nodes", [])
+                            node_id = get_node_id()
+                            peers = [peer for peer in peers if peer != node_id]
+                            old_peers = known_peers.copy()
+
+                            known_peers = set(peers)
+                            new_peers = known_peers - old_peers
+                            lost_peers = old_peers - known_peers
+
+                            if new_peers:
+                                print(f"[Peers] New: {new_peers}")
+                            if lost_peers:
+                                print(f"[Peers] Lost: {lost_peers}")
+
+                            print(f"[Peers] Known peers: {len(known_peers)}")
+
             except Exception as e:
 
                 print(f"[Relay] Failed {base_url}: {e}")
 
                 websocket_connection = None
+                current_relay = None
+                os.environ.pop("RELAY_HTTP_URL", None)
 
         print("[Relay] All relays failed. Retrying in 3s...\n")
         await asyncio.sleep(3)

@@ -10,7 +10,7 @@ JOB_DIR = "jobs"
 os.makedirs(JOB_DIR, exist_ok=True)
 
 def get_active_relay():
-    return RELAY_URLS[0]
+    return os.getenv("RELAY_HTTP_URL", RELAY_URLS[0])
 
 def download_job(job_id):
 

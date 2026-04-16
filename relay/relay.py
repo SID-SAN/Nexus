@@ -11,11 +11,10 @@ import zipfile
 from relay.job_persistence import load_jobs, save_jobs
 from supabase import create_client
 from dotenv import load_dotenv
-load_dotenv()
 
+load_dotenv()
 app = FastAPI()
 
-import os
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -34,6 +33,7 @@ node_last_seen = {}
 jobs = load_jobs()
 node_owner_map = {}
 credit_update_lock = asyncio.Lock()
+last_peer_list = set()
 
 
 # -----------------------------
@@ -129,6 +129,28 @@ async def heartbeat_loop():
                 continue
 
             await safe_send(ws, {"type": "heartbeat"}, node_id)
+
+
+async def broadcast_peer_list():
+    global last_peer_list
+
+    while True:
+        await asyncio.sleep(5)
+
+        current = set(connected_nodes.keys())
+        if current == last_peer_list:
+            continue
+
+        last_peer_list = current
+        print(f"[Relay] Broadcasting peers: {current}")
+
+        message = {
+            "type": "peer_list",
+            "nodes": list(current)
+        }
+
+        for node_id, ws in list(connected_nodes.items()):
+            await safe_send(ws, message, node_id)
 
 
 # -----------------------------
@@ -300,6 +322,7 @@ async def startup():
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(monitor_jobs())
     asyncio.create_task(periodic_save())
+    asyncio.create_task(broadcast_peer_list())
 
 
 # -----------------------------
