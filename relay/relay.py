@@ -844,8 +844,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 original_result = original.get("result")
                 verify_result = payload.get("result")
+                original_val = parse_result_value(original_result)
+                verify_val = parse_result_value(verify_result)
 
-                if original_result == verify_result:
+                if original_val == verify_val:
                     print(f"[Verify] Chunk {chunk_key} verified by {node_id} against {original_source} ✅")
                 else:
                     print(f"[Verify] Chunk {chunk_key} mismatch ❌")
@@ -858,10 +860,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 verification_map = job.setdefault("verifications", {})
                 chunk_verify = verification_map.setdefault(chunk_key, {})
-                chunk_verify[node_id] = parse_result_value(verify_result)
+                chunk_verify[node_id] = verify_val
 
-                if original_result == verify_result:
-                    original_val = parse_result_value(original_result)
+                if original_val == verify_val:
                     job["results"][chunk_key] = original_val
                     job["status_map"][chunk_key] = "completed"
                     job.get("retry_count", {}).pop(chunk_key, None)

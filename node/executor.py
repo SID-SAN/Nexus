@@ -21,7 +21,12 @@ def execute_chunk(job_id, chunk_id, chunk_data=None):
             "error": "task.py not found in extracted job package",
         }
 
-    data = (chunk_data or {}).get(str(chunk_id), {})
+    payload = chunk_data or {}
+    if isinstance(payload, dict) and str(chunk_id) in payload:
+        data = payload.get(str(chunk_id), {})
+    else:
+        # Also support passing a direct single-chunk payload.
+        data = payload if isinstance(payload, dict) else {}
     args = [str(chunk_id)]
 
     if "start" in data:

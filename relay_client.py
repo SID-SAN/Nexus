@@ -64,7 +64,8 @@ async def execute_verify_chunk(job_id, chunk):
         if not os.path.exists(f"jobs/{job_id}.zip") and not os.path.exists(f"jobs/{job_id}"):
             download_job(job_id)
 
-        result = await asyncio.to_thread(execute_chunk, job_id, chunk, {})
+        chunk_data = job_cache.get(job_id, {}).get("chunk_data_map", {}).get(str(chunk), {})
+        result = await asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data)
 
         response = {
             "type": "verify_result",
@@ -297,6 +298,8 @@ async def connect_to_relay():
                             job_cache[job_id]["status"] = "running"
                             job_cache[job_id]["cleanup_scheduled"] = False
                             job_cache[job_id]["chunks"].add(chunk)
+                            chunk_data_map = job_cache[job_id].setdefault("chunk_data_map", {})
+                            chunk_data_map[str(chunk)] = chunk_data
                             job_cache[job_id]["last_updated"] = time.time()
                             print(f"[Cache] {job_id}: {job_cache[job_id]}")
 
@@ -323,6 +326,8 @@ async def connect_to_relay():
                             job_cache[job_id]["status"] = "running"
                             job_cache[job_id]["cleanup_scheduled"] = False
                             job_cache[job_id]["chunks"].update(chunks)
+                            chunk_data_map = job_cache[job_id].setdefault("chunk_data_map", {})
+                            chunk_data_map.update(chunk_data or {})
                             job_cache[job_id]["last_updated"] = time.time()
                             print(f"[Cache] {job_id}: {job_cache[job_id]}")
 
