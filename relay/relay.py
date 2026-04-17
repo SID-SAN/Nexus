@@ -758,7 +758,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                             while int(chunk) in job["queue"]:
                                 job["queue"].remove(int(chunk))
 
-                    job["logs"][chunk_key] = payload.get("logs", "")
+                    job["logs"].setdefault(chunk_key, "")
+                    job["logs"][chunk_key] += payload.get("logs") or ""
                     job.get("verify_requests", {}).pop(chunk_key, None)
                     job.get("verification_originals", {}).pop(chunk_key, None)
                     job.get("verify_started_at", {}).pop(chunk_key, None)
@@ -807,7 +808,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     verify_started_at[chunk_key] = time.time()
 
                 # submit_result only records and forwards. verify_result finalizes.
-                job["logs"][chunk_key] = payload.get("logs", "")
+                job["logs"].setdefault(chunk_key, "")
+                job["logs"][chunk_key] += payload.get("logs") or ""
                 job["errors"][chunk_key] = payload.get("error", "")
                 job["status_map"][chunk_key] = "running"
                 job["updated_at"] = time.time()
@@ -913,7 +915,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job.get("verify_requests", {}).pop(chunk_key, None)
                     job.get("verification_originals", {}).pop(chunk_key, None)
                     job.get("verify_started_at", {}).pop(chunk_key, None)
-                    job["logs"][chunk_key] = payload.get("logs", "")
+                    job["logs"].setdefault(chunk_key, "")
+                    verify_logs = payload.get("logs", "")
+                    if verify_logs:
+                        job["logs"][chunk_key] += f"\n[VERIFY]\n{verify_logs}"
                     job["errors"][chunk_key] = payload.get("error", "")
                 else:
                     job.setdefault("mismatch_count", 0)
@@ -1109,6 +1114,7 @@ def job_logs(job_id: str, api_key: str):
 
     return {
         "job_id": job_id,
+        "status": job.get("status"),
         "logs": job.get("logs", {}),
         "errors": job.get("errors", {})
     }

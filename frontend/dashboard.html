@@ -136,7 +136,7 @@
 <!-- Logs -->
 
 <div id="logPanel"
-  class="hidden fixed right-0 top-0 w-96 h-full bg-black p-4 overflow-auto">
+  class="hidden fixed right-0 top-0 h-full w-full sm:w-[500px] bg-black p-4 overflow-auto">
 
   <button onclick="closeLogs()" class="bg-red-500 px-3 py-1 mb-3">
     Close
@@ -182,15 +182,19 @@ async function fetchData() {
     return;
   }
 
-  const nodesRes = await fetch(BASE_URL + "/cluster_status");
-  const jobsRes = await fetch(BASE_URL + "/all_jobs?api_key=" + apiKey);
+  try {
+    const nodesRes = await fetch(BASE_URL + "/cluster_status");
+    const jobsRes = await fetch(BASE_URL + "/all_jobs?api_key=" + apiKey);
 
-  const nodes = await nodesRes.json();
-  const jobs = await jobsRes.json();
+    const nodes = await nodesRes.json();
+    const jobs = await jobsRes.json();
 
-  updateNodes(nodes);
-  updateJobs(jobs);
-  updateStats(nodes, jobs);
+    updateNodes(nodes);
+    updateJobs(jobs);
+    updateStats(nodes, jobs);
+  } catch (e) {
+    console.error("Fetch error:", e);
+  }
 }
 
 async function fetchCredits() {
@@ -198,11 +202,15 @@ async function fetchCredits() {
   const apiKey = localStorage.getItem("api_key");
   if (!apiKey) return;
 
-  const res = await fetch(BASE_URL + `/user/${apiKey}`);
-  const data = await res.json();
+  try {
+    const res = await fetch(BASE_URL + `/user/${apiKey}`);
+    const data = await res.json();
 
-  document.getElementById("credits").innerText =
-    data.credits ?? 0;
+    document.getElementById("credits").innerText =
+      data.credits ?? 0;
+  } catch (e) {
+    console.error("Fetch error:", e);
+  }
 }
 
 // Login
@@ -282,7 +290,7 @@ function updateNodes(nodes) {
         "bg-blue-400";
 
       return `
-      <div class="card p-3">
+      <div class="bg-slate-800 rounded shadow-md p-3">
 
         <div class="flex justify-between items-center mb-2">
           <span>${n.id}</span>
@@ -317,13 +325,20 @@ function updateJobs(jobs) {
   document.getElementById("jobBody").innerHTML =
     Object.entries(jobs).map(([id, j]) => {
 
-      let pct = j.total ? Math.round((j.completed / j.total) * 100) : 0;
+      let pct = (j.total && j.total > 0)
+        ? Math.round((j.completed / j.total) * 100)
+        : 0;
+      const statusClass =
+        j.status === "completed" ? "text-green-400" :
+        j.status === "failed" ? "text-red-400" :
+        "text-yellow-400";
 
       return `
-      <tr class="border-t border-slate-700">
+      <tr class="border-t border-slate-700 cursor-pointer hover:bg-slate-800/60 transition"
+          onclick="viewLogs('${id}')">
         <td class="p-2">${j.name || "Untitled"}</td>
         <td class="p-2">${id.slice(0,8)}</td>
-        <td>${j.status}</td>
+        <td class="${statusClass}">${j.status}</td>
         <td>
           <div class="bg-slate-700 h-2 w-20 inline-block">
             <div class="bg-indigo-400 h-2" style="width:${pct}%"></div>
@@ -333,13 +348,13 @@ function updateJobs(jobs) {
         <td>${j.duration}s</td>
         <td>${j.speed} chunks/s</td>
         <td>
-          <button onclick="viewLogs('${id}')">Logs</button>
+          <button onclick="event.stopPropagation(); viewLogs('${id}')">Logs</button>
 
           ${(j.status || "").toLowerCase().trim() === "running"
-            ? `<button onclick="cancelJob('${id}')">Cancel</button>` : ""}
+            ? `<button onclick="event.stopPropagation(); cancelJob('${id}')">Cancel</button>` : ""}
 
           ${(j.status || "").toLowerCase().trim() === "completed"
-            ? `<button onclick="viewResult('${id}')">Result</button>` : ""}
+            ? `<button onclick="event.stopPropagation(); viewResult('${id}')">Result</button>` : ""}
         </td>
       </tr>
       `;
@@ -359,13 +374,14 @@ function updateStats(nodes, jobs) {
   let speed = 0;
 
   Object.values(jobs || {}).forEach(j => {
-    if (j.status === "running") running++;
-    speed += j.speed || 0;
+    if (j.status === "running") {
+      running++;
+      speed += j.speed || 0;
+    }
   });
 
   document.getElementById("runningCount").innerText = running;
-  const avg =
-  (speed / (Object.keys(jobs || {}).length || 1)).toFixed(2);
+  const avg = (speed / (running || 1)).toFixed(2);
 
   document.getElementById("avgSpeed").innerText =
     avg + " chunks/s";
@@ -386,50 +402,74 @@ async function cancelJob(id) {
 function viewLogs(id) {
 
   document.getElementById("logPanel").classList.remove("hidden");
+  document.getElementById("logContent").innerHTML =
+    "<p class='text-slate-400'>Loading logs...</p>";
 
-  if (logInterval) clearInterval(logInterval);
+  if (logInterval) {
+    clearInterval(logInterval);
+    logInterval = null;
+  }
 
   async function load() {
     const apiKey = localStorage.getItem("api_key");
     if (!apiKey) return;
 
-    const res = await fetch(BASE_URL + `/job_logs/${id}?api_key=${apiKey}`);
-    const data = await res.json();
+    try {
+      const res = await fetch(BASE_URL + `/job_logs/${id}?api_key=${apiKey}`);
+      const data = await res.json();
 
-    console.log("LOG DATA:", data); // debug
+      let html = "";
 
-    let html = "";
+      const logs = data.logs && Object.keys(data.logs).length > 0
+        ? data.logs
+        : data;
+      const time = new Date().toLocaleTimeString();
 
-    const logs = data.logs || data;
+      Object.keys(logs)
+        .sort((a, b) => Number(a) - Number(b))
+        .forEach(c => {
+          if (!logs[c]) return;
 
-    for (let c in logs) {
-      html += `
-        <pre style="
-          background:#020617;
-          padding:10px;
-          border-radius:6px;
-          color:#38bdf8;
-          font-size:12px;
-          margin-bottom:6px;
-        ">${logs[c]}</pre>
-      `;
+          html += `
+            <pre style="
+              background:#020617;
+              padding:10px;
+              border-radius:6px;
+              color:#38bdf8;
+              font-size:12px;
+              margin-bottom:6px;
+            ">[${time}] Chunk ${c}: ${logs[c]}</pre>
+          `;
+        });
+
+      if (!html) {
+        html = "<p class='text-slate-500'>Waiting for logs...</p>";
+      }
+
+      document.getElementById("logContent").innerHTML = html;
+      const panel = document.getElementById("logPanel");
+      panel.scrollTop = panel.scrollHeight;
+
+      if (data.status === "completed" || data.status === "failed") {
+        clearInterval(logInterval);
+        logInterval = null;
+      }
+    } catch (e) {
+      console.error("Fetch error:", e);
     }
-
-    if (!html) {
-      html = "<p class='text-slate-400'>No logs yet...</p>";
-    }
-
-    document.getElementById("logContent").innerHTML = html;
   }
 
   load();
-  logInterval = setInterval(load, 1000);
+  logInterval = setInterval(load, 2000);
 }
 
 
 function closeLogs() {
 document.getElementById("logPanel").classList.add("hidden");
-clearInterval(logInterval);
+if (logInterval) {
+  clearInterval(logInterval);
+  logInterval = null;
+}
 }
 
 
@@ -439,11 +479,17 @@ async function viewResult(id) {
 
   document.getElementById("resultPanel").classList.remove("hidden");
 
-  const res = await fetch(BASE_URL + `/job_result/${id}?api_key=${apiKey}`);
-  const data = await res.json();
+  try {
+    const res = await fetch(BASE_URL + `/job_result/${id}?api_key=${apiKey}`);
+    const data = await res.json();
 
-  document.getElementById("resultContent").innerText =
-    JSON.stringify(data.result, null, 2);
+    document.getElementById("resultContent").innerText =
+      typeof data.result === "object"
+        ? JSON.stringify(data.result, null, 2)
+        : data.result;
+  } catch (e) {
+    console.error("Fetch error:", e);
+  }
 }
 
 function closeResult() {
