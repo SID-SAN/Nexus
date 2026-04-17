@@ -42,6 +42,7 @@ last_peer_list = set()
 MAX_RETRIES = 2
 CHUNK_TIMEOUT = 60
 NODE_TIMEOUT = 60
+VERIFY_TIMEOUT = 45
 
 
 # -----------------------------
@@ -170,6 +171,25 @@ async def monitor_jobs():
                 if status != "running":
                     continue
 
+                verify_requests = job.get("verify_requests", {})
+                verify_started_at = job.get("verify_started_at", {})
+
+                if chunk in verify_requests and chunk not in job["results"]:
+                    started_at = verify_started_at.get(chunk)
+                    if started_at and time.time() - started_at > VERIFY_TIMEOUT:
+                        print(f"[Verify Timeout] chunk {chunk} for job {job_id}")
+                        job.get("verifications", {}).pop(chunk, None)
+                        job.get("verify_requests", {}).pop(chunk, None)
+                        job.get("verification_originals", {}).pop(chunk, None)
+                        job.get("verify_started_at", {}).pop(chunk, None)
+
+                        if int(chunk) not in job["queue"]:
+                            job["queue"].append(int(chunk))
+
+                        job["status_map"][chunk] = "pending"
+                        job["updated_at"] = time.time()
+                        continue
+
                 assigned_time = job["assigned_at"].get(chunk)
 
                 if not assigned_time:
@@ -185,6 +205,10 @@ async def monitor_jobs():
                         job["queue"].append(int(chunk))
                         job["status_map"][chunk] = "pending"
                         job["retries"][chunk] += 1
+                        job.get("verifications", {}).pop(chunk, None)
+                        job.get("verify_requests", {}).pop(chunk, None)
+                        job.get("verification_originals", {}).pop(chunk, None)
+                        job.get("verify_started_at", {}).pop(chunk, None)
 
                         job["errors"][chunk] = f"Retry {job['retries'][chunk]}"
                         job["updated_at"] = time.time()
@@ -194,6 +218,10 @@ async def monitor_jobs():
 
                         job["status_map"][chunk] = "failed"
                         job["errors"][chunk] = "Max retries exceeded"
+                        job.get("verifications", {}).pop(chunk, None)
+                        job.get("verify_requests", {}).pop(chunk, None)
+                        job.get("verification_originals", {}).pop(chunk, None)
+                        job.get("verify_started_at", {}).pop(chunk, None)
 
                         # 🔥 check if job should fail
                         failed_chunks = [
@@ -312,6 +340,54 @@ def build_chunks_data(config, fallback_chunks):
         return create_file_chunks(files)
 
     return [{"id": i} for i in range(1, fallback_chunks + 1)]
+
+
+def parse_result_value(raw_result):
+    if raw_result is None:
+        parsed_result = ""
+    else:
+        parsed_result = str(raw_result).strip().splitlines()
+        parsed_result = parsed_result[-1].strip() if parsed_result else ""
+
+    try:
+        return int(parsed_result)
+    except Exception:
+        try:
+            return float(parsed_result)
+        except Exception:
+            return None
+
+
+async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
+    verify_requests = job.setdefault("verify_requests", {})
+
+    if chunk_key in verify_requests:
+        return
+
+    candidate_nodes = [
+        nid for nid in connected_nodes.keys()
+        if nid != source_node_id
+    ]
+
+    if not candidate_nodes:
+        print(f"[Verify] No eligible peer for chunk {chunk_key} in job {job_id}")
+        return
+
+    target_node = random.choice(candidate_nodes)
+    target_ws = connected_nodes.get(target_node)
+    if not target_ws:
+        return
+
+    await safe_send(target_ws, {
+        "type": "verify_chunk",
+        "payload": {
+            "job_id": job_id,
+            "chunk": int(chunk_key)
+        }
+    }, target_node)
+
+    verify_requests[chunk_key] = target_node
+    print(f"[Verify] Forwarded chunk {chunk_key} for job {job_id} to {target_node}")
 
 
 # -----------------------------
@@ -496,12 +572,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if job["status"] != "running":
                         continue
 
-                    pending_verifications = [
-                        c for c, votes in job.get("verifications", {}).items()
-                        if c not in job["results"] and len(votes) < 2
-                    ]
-
-                    if not job["queue"] and not pending_verifications:
+                    if not job["queue"]:
                         continue
 
                     owner = job.get("owner")
@@ -530,13 +601,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 jid, job = best_job
-                pending_verifications = [
-                    c for c, votes in job.get("verifications", {}).items()
-                    if c not in job["results"] and len(votes) < 2
-                ]
 
                 node_capacity = get_node_capacity(node_id)
-                total_available = len(job["queue"]) + len(pending_verifications)
+                total_available = len(job["queue"])
                 batch_size = min(
                     max(1, node_capacity // 20),
                     max(1, total_available)
@@ -570,18 +637,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                             continue
 
                         chunk = candidate
-
-                    if chunk is None:
-                        for verify_chunk_key in pending_verifications:
-
-                            if verify_chunk_key in job["results"]:
-                                continue
-
-                            if node_id in job.get("verifications", {}).get(verify_chunk_key, {}):
-                                continue
-
-                            chunk = int(verify_chunk_key)
-                            break
 
                     if chunk is None:
                         break
@@ -624,6 +679,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 if chunk_key in job["results"]:
                     continue
+                if job["status_map"].get(chunk_key) == "completed":
+                    continue
 
                 if status == "failed":
                     failed_nodes_map = job.setdefault("failed_nodes", {})
@@ -665,6 +722,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                                 job["queue"].remove(int(chunk))
 
                     job["logs"][chunk_key] = payload.get("logs", "")
+                    job.get("verify_requests", {}).pop(chunk_key, None)
+                    job.get("verification_originals", {}).pop(chunk_key, None)
+                    job.get("verify_started_at", {}).pop(chunk_key, None)
                     job["updated_at"] = time.time()
                     print("Retries:", job["retries"])
 
@@ -689,113 +749,145 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 raw_result = payload.get("result")
-                if raw_result is None:
-                    parsed_result = ""
-                else:
-                    parsed_result = str(raw_result).strip().splitlines()
-                    parsed_result = parsed_result[-1].strip() if parsed_result else ""
-
-                try:
-                    val = int(parsed_result)
-                except Exception:
-                    try:
-                        val = float(parsed_result)
-                    except Exception:
-                        val = None
+                val = parse_result_value(raw_result)
 
                 verification_map = job.setdefault("verifications", {})
                 chunk_verify = verification_map.setdefault(chunk_key, {})
+                originals = job.setdefault("verification_originals", {})
+                verify_started_at = job.setdefault("verify_started_at", {})
 
                 if node_id in chunk_verify:
                     continue
 
                 chunk_verify[node_id] = val
+                originals.setdefault(chunk_key, {
+                    "source": node_id,
+                    "result": raw_result
+                })
 
-                verified_values = list(chunk_verify.values())
+                if len(chunk_verify) == 1:
+                    await forward_verify_chunk(job, node_id, job_id, chunk_key)
+                    verify_started_at[chunk_key] = time.time()
 
-                if len(verified_values) >= 2:
-
-                    if verified_values[0] == verified_values[1]:
-
-                        print(f"[Verified] chunk {chunk_key}")
-
-                        job["results"][chunk_key] = verified_values[0]
-                        job["status_map"][chunk_key] = "completed"
-
-                        # 🔥 NEW: REWARD SPLIT LOGIC
-                        price = job.get("price", 0)
-                        rewarded_chunks = job.setdefault("rewarded_chunks", set())
-
-                        if price > 0 and chunk_key not in rewarded_chunks:
-                            reward_per_chunk = price / job["chunks"]
-                            reward_per_node = round(reward_per_chunk / len(chunk_verify), 4)
-
-                            for node in chunk_verify.keys():
-                                user_id = node_owner_map.get(node)
-
-                                if not user_id:
-                                    continue
-
-                                try:
-                                    user = get_user_by_id(user_id)
-
-                                    if not user:
-                                        continue
-
-                                    api_key = user["api_key"].strip()
-
-                                    try:
-                                        supabase.rpc("increment_credits", {
-                                            "user_api_key": api_key,
-                                            "amount": reward_per_node
-                                        }).execute()
-                                    except Exception:
-                                        # fallback path if RPC is unavailable
-                                        async with credit_update_lock:
-                                            user = get_user_by_id(user_id)
-                                            if not user:
-                                                continue
-                                            api_key = user["api_key"].strip()
-                                            new_credits = user["credits"] + reward_per_node
-                                            update_user_credits_by_api_key(api_key, new_credits)
-
-                                    print(f"[Reward] {reward_per_node} -> node {node}")
-
-                                except Exception as e:
-                                    print("❌ Reward update failed:", e)
-                            rewarded_chunks.add(chunk_key)
-
-                        # clear verification/failed state after successful completion
-                        job.get("verifications", {}).pop(chunk_key, None)
-                        job.get("failed_nodes", {}).pop(chunk_key, None)
-
-                    else:
-                        print(f"[Mismatch] chunk {chunk_key}")
-                        job.setdefault("mismatch_count", 0)
-                        job["mismatch_count"] += 1
-
-                        # ❌ NO REWARD GIVEN
-                        # reset for retry
-                        job["verifications"][chunk_key] = {}
-
-                        if int(chunk_key) not in job["queue"]:
-                            job["queue"].append(int(chunk_key))
-
-                        job["status_map"][chunk_key] = "pending"
-                        job["updated_at"] = time.time()
-                        asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
-                        continue
-                else:
-                    # wait for second independent verification result
-                    job["status_map"][chunk_key] = "running"
-                    job["updated_at"] = time.time()
-                    asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
-                    continue
-
+                # submit_result only records and forwards. verify_result finalizes.
                 job["logs"][chunk_key] = payload.get("logs", "")
                 job["errors"][chunk_key] = payload.get("error", "")
+                job["status_map"][chunk_key] = "running"
                 job["updated_at"] = time.time()
-                
+                asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
+                continue
+
+            elif msg_type == "verify_result":
+
+                payload = message["payload"]
+                job_id = payload["job_id"]
+                chunk_key = str(payload["chunk"])
+
+                job = jobs.get(job_id)
+                if not job or job["status"] == "cancelled":
+                    continue
+
+                if chunk_key in job["results"]:
+                    continue
+                if job["status_map"].get(chunk_key) == "completed":
+                    continue
+
+                originals = job.get("verification_originals", {})
+                original = originals.get(chunk_key)
+                if not original:
+                    print(f"[Verify] Missing original result for chunk {chunk_key} in job {job_id}")
+                    continue
+
+                original_source = original.get("source")
+                if node_id == original_source:
+                    print(f"[Verify] Ignoring self-verification for chunk {chunk_key}")
+                    continue
+
+                original_result = original.get("result")
+                verify_result = payload.get("result")
+
+                if original_result == verify_result:
+                    print(f"[Verify] Chunk {chunk_key} verified by {node_id} against {original_source} ✅")
+                else:
+                    print(f"[Verify] Chunk {chunk_key} mismatch ❌")
+
+                verification_map = job.get("verifications", {})
+                chunk_verify = verification_map.get(chunk_key)
+
+                if chunk_verify and node_id in chunk_verify:
+                    continue
+
+                verification_map = job.setdefault("verifications", {})
+                chunk_verify = verification_map.setdefault(chunk_key, {})
+                chunk_verify[node_id] = parse_result_value(verify_result)
+
+                if original_result == verify_result:
+                    original_val = parse_result_value(original_result)
+                    job["results"][chunk_key] = original_val
+                    job["status_map"][chunk_key] = "completed"
+
+                    price = job.get("price", 0)
+                    rewarded_chunks = job.setdefault("rewarded_chunks", set())
+
+                    if price > 0 and chunk_key not in rewarded_chunks:
+                        reward_per_chunk = price / job["chunks"]
+                        reward_per_node = round(reward_per_chunk / len(chunk_verify), 4)
+
+                        for node in chunk_verify.keys():
+                            user_id = node_owner_map.get(node)
+
+                            if not user_id:
+                                continue
+
+                            try:
+                                user = get_user_by_id(user_id)
+
+                                if not user:
+                                    continue
+
+                                api_key = user["api_key"].strip()
+
+                                try:
+                                    supabase.rpc("increment_credits", {
+                                        "user_api_key": api_key,
+                                        "amount": reward_per_node
+                                    }).execute()
+                                except Exception:
+                                    async with credit_update_lock:
+                                        user = get_user_by_id(user_id)
+                                        if not user:
+                                            continue
+                                        api_key = user["api_key"].strip()
+                                        new_credits = user["credits"] + reward_per_node
+                                        update_user_credits_by_api_key(api_key, new_credits)
+
+                                print(f"[Reward] {reward_per_node} -> node {node}")
+
+                            except Exception as e:
+                                print("❌ Reward update failed:", e)
+                        rewarded_chunks.add(chunk_key)
+
+                    job.get("verifications", {}).pop(chunk_key, None)
+                    job.get("failed_nodes", {}).pop(chunk_key, None)
+                    job.get("verify_requests", {}).pop(chunk_key, None)
+                    job.get("verification_originals", {}).pop(chunk_key, None)
+                    job.get("verify_started_at", {}).pop(chunk_key, None)
+                    job["logs"][chunk_key] = payload.get("logs", "")
+                    job["errors"][chunk_key] = payload.get("error", "")
+                else:
+                    job.setdefault("mismatch_count", 0)
+                    job["mismatch_count"] += 1
+                    job["verifications"][chunk_key] = {}
+                    job.get("verify_requests", {}).pop(chunk_key, None)
+                    job.get("verification_originals", {}).pop(chunk_key, None)
+                    job.get("verify_started_at", {}).pop(chunk_key, None)
+
+                    if int(chunk_key) not in job["queue"]:
+                        job["queue"].append(int(chunk_key))
+
+                    job["status_map"][chunk_key] = "pending"
+
+                job["updated_at"] = time.time()
 
                 completed_chunks = [
                     c for c, s in job["status_map"].items()

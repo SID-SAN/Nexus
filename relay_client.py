@@ -56,6 +56,41 @@ async def cleanup_job(job_id):
     job_cache.pop(job_id, None)
     print(f"[Cache] Cleaned job {job_id}")
 
+
+async def execute_verify_chunk(job_id, chunk):
+    print(f"[Verify] Verifying chunk {chunk} for job {job_id}")
+
+    try:
+        if not os.path.exists(f"jobs/{job_id}.zip") and not os.path.exists(f"jobs/{job_id}"):
+            download_job(job_id)
+
+        result = await asyncio.to_thread(execute_chunk, job_id, chunk, {})
+
+        response = {
+            "type": "verify_result",
+            "source": get_node_id(),
+            "payload": {
+                "job_id": job_id,
+                "chunk": chunk,
+                "status": result["status"],
+                "result": result["result"]
+            }
+        }
+    except Exception as e:
+        response = {
+            "type": "verify_result",
+            "source": get_node_id(),
+            "payload": {
+                "job_id": job_id,
+                "chunk": chunk,
+                "status": "failed",
+                "result": None,
+                "error": str(e)
+            }
+        }
+
+    await send_queue.put(response)
+
 # -----------------------------
 # 🔥 BACKGROUND EXECUTION
 # -----------------------------
@@ -320,6 +355,13 @@ async def connect_to_relay():
                                 print(f"[Peers] Lost: {lost_peers}")
 
                             print(f"[Peers] Known peers: {len(known_peers)}")
+
+                        elif msg_type == "verify_chunk":
+                            payload = data["payload"]
+                            job_id = payload["job_id"]
+                            chunk = payload["chunk"]
+
+                            asyncio.create_task(execute_verify_chunk(job_id, chunk))
 
             except Exception as e:
 
