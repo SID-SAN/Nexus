@@ -39,7 +39,7 @@ last_peer_list = set()
 # -----------------------------
 # CONFIG
 # -----------------------------
-MAX_RETRIES = 2
+MAX_RETRIES = 3
 CHUNK_TIMEOUT = 60
 NODE_TIMEOUT = 60
 VERIFY_TIMEOUT = 45
@@ -165,6 +165,7 @@ async def monitor_jobs():
 
             if job["status"] != "running":
                 continue
+            job.setdefault("retry_count", {})
 
             for chunk, status in list(job["status_map"].items()):
 
@@ -177,6 +178,37 @@ async def monitor_jobs():
                 if chunk in verify_requests and chunk not in job["results"]:
                     started_at = verify_started_at.get(chunk)
                     if started_at and time.time() - started_at > VERIFY_TIMEOUT:
+                        retry_map = job.setdefault("retry_count", {})
+                        retry_map[chunk] = retry_map.get(chunk, 0) + 1
+
+                        if retry_map[chunk] > MAX_RETRIES:
+                            print(f"[Verify] Chunk {chunk} failed permanently ❌")
+                            job["status_map"][chunk] = "failed"
+                            while int(chunk) in job["queue"]:
+                                job["queue"].remove(int(chunk))
+                            job.get("verifications", {}).pop(chunk, None)
+                            job.get("verify_requests", {}).pop(chunk, None)
+                            job.get("verification_originals", {}).pop(chunk, None)
+                            job.get("verify_started_at", {}).pop(chunk, None)
+                            job["errors"][chunk] = "Verification retries exceeded"
+                            failed_chunks = [
+                                c for c, s in job["status_map"].items()
+                                if s == "failed"
+                            ]
+                            running_chunks = [
+                                c for c, s in job["status_map"].items()
+                                if s == "running"
+                            ]
+                            completed_chunks = [
+                                c for c, s in job["status_map"].items()
+                                if s == "completed"
+                            ]
+                            if failed_chunks and not running_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
+                                job["status"] = "failed"
+                                job["completed_at"] = time.time()
+                            job["updated_at"] = time.time()
+                            continue
+
                         print(f"[Verify Timeout] chunk {chunk} for job {job_id}")
                         job.get("verifications", {}).pop(chunk, None)
                         job.get("verify_requests", {}).pop(chunk, None)
@@ -508,6 +540,7 @@ async def submit_job(
         "status_map": {},
         "assigned_at": {},
         "retries": {},
+        "retry_count": {},
         "status": "running",
         "reducer": reducer,
         "price": price,
@@ -601,6 +634,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 jid, job = best_job
+                if job.get("status") in ("completed", "failed"):
+                    continue
 
                 node_capacity = get_node_capacity(node_id)
                 total_available = len(job["queue"])
@@ -628,7 +663,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                         # Allow reassignment while the chunk is not completed and
                         # still needs independent verification votes.
-                        if candidate_status == "completed" or verification_count >= 2:
+                        if candidate_status in ("completed", "failed") or verification_count >= 2:
                             continue
 
                         # Skip assigning the same verification chunk to a node
@@ -680,6 +715,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if chunk_key in job["results"]:
                     continue
                 if job["status_map"].get(chunk_key) == "completed":
+                    continue
+                if job["status_map"].get(chunk_key) == "failed":
                     continue
 
                 if status == "failed":
@@ -741,7 +778,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if len(completed_chunks) == job["chunks"]:
                         job["status"] = "completed"
                         job["completed_at"] = time.time()
-                    elif failed_chunks and not job["queue"]:
+                    elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
                         job["status"] = "failed"
                         job["completed_at"] = time.time()
 
@@ -791,6 +828,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
                 if job["status_map"].get(chunk_key) == "completed":
                     continue
+                if job["status_map"].get(chunk_key) == "failed":
+                    continue
 
                 originals = job.get("verification_originals", {})
                 original = originals.get(chunk_key)
@@ -825,6 +864,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     original_val = parse_result_value(original_result)
                     job["results"][chunk_key] = original_val
                     job["status_map"][chunk_key] = "completed"
+                    job.get("retry_count", {}).pop(chunk_key, None)
 
                     price = job.get("price", 0)
                     rewarded_chunks = job.setdefault("rewarded_chunks", set())
@@ -877,15 +917,29 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 else:
                     job.setdefault("mismatch_count", 0)
                     job["mismatch_count"] += 1
-                    job["verifications"][chunk_key] = {}
-                    job.get("verify_requests", {}).pop(chunk_key, None)
-                    job.get("verification_originals", {}).pop(chunk_key, None)
-                    job.get("verify_started_at", {}).pop(chunk_key, None)
+                    retry_map = job.setdefault("retry_count", {})
+                    retry_map[chunk_key] = retry_map.get(chunk_key, 0) + 1
 
-                    if int(chunk_key) not in job["queue"]:
-                        job["queue"].append(int(chunk_key))
+                    if retry_map[chunk_key] > MAX_RETRIES:
+                        print(f"[Verify] Chunk {chunk_key} failed permanently ❌")
+                        job["status_map"][chunk_key] = "failed"
+                        while int(chunk_key) in job["queue"]:
+                            job["queue"].remove(int(chunk_key))
+                        job.get("verifications", {}).pop(chunk_key, None)
+                        job.get("verify_requests", {}).pop(chunk_key, None)
+                        job.get("verification_originals", {}).pop(chunk_key, None)
+                        job.get("verify_started_at", {}).pop(chunk_key, None)
+                        job["errors"][chunk_key] = "Verification retries exceeded"
+                    else:
+                        job["verifications"][chunk_key] = {}
+                        job.get("verify_requests", {}).pop(chunk_key, None)
+                        job.get("verification_originals", {}).pop(chunk_key, None)
+                        job.get("verify_started_at", {}).pop(chunk_key, None)
 
-                    job["status_map"][chunk_key] = "pending"
+                        if retry_map[chunk_key] <= MAX_RETRIES and int(chunk_key) not in job["queue"]:
+                            job["queue"].append(int(chunk_key))
+
+                        job["status_map"][chunk_key] = "pending"
 
                 job["updated_at"] = time.time()
 
@@ -902,7 +956,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if len(completed_chunks) == job["chunks"]:
                     job["status"] = "completed"
                     job["completed_at"] = time.time()
-                elif failed_chunks and not job["queue"]:
+                elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
                     job["status"] = "failed"
                     job["completed_at"] = time.time()
 
