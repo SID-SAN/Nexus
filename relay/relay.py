@@ -30,6 +30,7 @@ os.makedirs(JOB_DIR, exist_ok=True)
 connected_nodes = {}
 node_resources = {}
 node_last_seen = {}
+node_stats = {}
 jobs = load_jobs()
 node_owner_map = {}
 credit_update_lock = asyncio.Lock()
@@ -178,6 +179,11 @@ async def monitor_jobs():
                 if chunk in verify_requests and chunk not in job["results"]:
                     started_at = verify_started_at.get(chunk)
                     if started_at and time.time() - started_at > VERIFY_TIMEOUT:
+                        assigned_node = verify_requests.get(chunk)
+                        if assigned_node:
+                            stats = get_node_stats(assigned_node)
+                            stats["timeouts"] += 1
+
                         retry_map = job.setdefault("retry_count", {})
                         retry_map[chunk] = retry_map.get(chunk, 0) + 1
 
@@ -280,6 +286,30 @@ async def monitor_jobs():
 # -----------------------------
 # HELPERS
 # -----------------------------
+def get_node_stats(node_id):
+    return node_stats.setdefault(node_id, {
+        "success": 0,
+        "failures": 0,
+        "mismatches": 0,
+        "timeouts": 0
+    })
+
+
+def get_node_score(node_id):
+    stats = get_node_stats(node_id)
+    total = (
+        stats["success"] +
+        stats["failures"] +
+        stats["mismatches"] +
+        stats["timeouts"]
+    )
+
+    if total == 0:
+        return 1.0
+
+    return stats["success"] / total
+
+
 def get_node_capacity(node_id):
     res = node_resources.get(node_id, {})
     cpu = res.get("cpu", 100)
@@ -622,7 +652,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     # 🔥 NEW: fairness penalty
                     fairness_penalty = user_load * 0.1
 
-                    score = progress + size_penalty + fairness_penalty
+                    node_score = get_node_score(node_id)
+                    reliability_penalty = (1 - node_score) * 2
+                    score = progress + size_penalty + fairness_penalty + reliability_penalty
 
                     score += random.uniform(0, 0.05)
 
@@ -639,10 +671,15 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 node_capacity = get_node_capacity(node_id)
                 total_available = len(job["queue"])
+
+                node_score = get_node_score(node_id)
+                adjusted_capacity = int(node_capacity * node_score)
                 batch_size = min(
-                    max(1, node_capacity // 20),
+                    max(1, adjusted_capacity // 20),
                     max(1, total_available)
-                    )
+                )
+                if get_node_score(node_id) < 0.2:
+                    continue
 
                 assigned = []
 
@@ -720,6 +757,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 if status == "failed":
+                    stats = get_node_stats(node_id)
+                    stats["failures"] += 1
+
                     failed_nodes_map = job.setdefault("failed_nodes", {})
                     failed_node_set = failed_nodes_map.setdefault(chunk_key, set())
                     if isinstance(failed_node_set, list):
@@ -910,6 +950,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                                 print("❌ Reward update failed:", e)
                         rewarded_chunks.add(chunk_key)
 
+                    for node in chunk_verify.keys():
+                        stats = get_node_stats(node)
+                        stats["success"] += 1
+
                     job.get("verifications", {}).pop(chunk_key, None)
                     job.get("failed_nodes", {}).pop(chunk_key, None)
                     job.get("verify_requests", {}).pop(chunk_key, None)
@@ -921,6 +965,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job["logs"][chunk_key] += f"\n[VERIFY]\n{verify_logs}"
                     job["errors"][chunk_key] = payload.get("error", "")
                 else:
+                    stats = get_node_stats(node_id)
+                    stats["mismatches"] += 1
+
                     job.setdefault("mismatch_count", 0)
                     job["mismatch_count"] += 1
                     retry_map = job.setdefault("retry_count", {})
