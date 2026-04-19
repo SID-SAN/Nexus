@@ -625,6 +625,24 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
             if msg_type == "resource_update":
                 node_resources[node_id] = message["payload"]
 
+            elif msg_type == "direct_message":
+                payload = message.get("payload", {})
+                target = payload.get("target")
+
+                if not target:
+                    continue
+
+                target_ws = connected_nodes.get(target)
+
+                if not target_ws:
+                    continue
+
+                await safe_send(target_ws, {
+                    "type": "direct_message",
+                    "source": node_id,
+                    "payload": payload
+                }, target)
+
             elif msg_type == "request_chunk":
 
                 best_job = None

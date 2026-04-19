@@ -3,6 +3,8 @@ import websockets
 import json
 import os
 import time
+import random
+import copy
 from urllib.parse import quote
 
 from node.downloader import download_job
@@ -53,8 +55,50 @@ MAX_CONCURRENT_CHUNKS = 2
 
 async def cleanup_job(job_id):
     await asyncio.sleep(60)  # wait a bit
+    if job_id in job_cache:
+        for peer_id in list(known_peers):
+            await send_queue.put({
+                "type": "direct_message",
+                "payload": {
+                    "target": peer_id,
+                    "action": "job_cleanup",
+                    "job_id": job_id
+                }
+            })
     job_cache.pop(job_id, None)
     print(f"[Cache] Cleaned job {job_id}")
+
+
+def build_sync_signature(state):
+    status = state.get("status", "pending")
+    chunks = state.get("chunks", set())
+    if isinstance(chunks, list):
+        chunks = set(chunks)
+    return (status, tuple(sorted(chunks)))
+
+
+async def send_job_sync(job_id):
+    if job_id not in job_cache:
+        return
+
+    status = copy.deepcopy(job_cache[job_id])
+    chunks = status.get("chunks")
+    if isinstance(chunks, set):
+        status["chunks"] = list(chunks)
+
+    peers = list(known_peers)
+    selected_peers = random.sample(peers, min(2, len(peers)))
+
+    for peer_id in selected_peers:
+        await send_queue.put({
+            "type": "direct_message",
+            "payload": {
+                "target": peer_id,
+                "action": "job_sync",
+                "job_id": job_id,
+                "status": status
+            }
+        })
 
 
 async def execute_verify_chunk(job_id, chunk):
@@ -195,6 +239,15 @@ async def execute_chunk_batch(job_id, chunks, total_chunks, chunk_data=None):
                         asyncio.create_task(cleanup_job(job_id_resp))
 
                 print(f"[Cache] {job_id_resp}: {job_cache[job_id_resp]}")
+                current_signature = build_sync_signature(job_cache[job_id_resp])
+                last_signature = job_cache[job_id_resp].get("last_sync_signature")
+                if (
+                    current_signature != last_signature
+                    and time.time() - job_cache[job_id_resp].get("last_sync", 0) > 2
+                ):
+                    await send_job_sync(job_id_resp)
+                    job_cache[job_id_resp]["last_sync"] = time.time()
+                    job_cache[job_id_resp]["last_sync_signature"] = current_signature
 
             await send_queue.put(response)
             print("[Node] Queued result:", response)
@@ -367,6 +420,55 @@ async def connect_to_relay():
                             chunk = payload["chunk"]
 
                             asyncio.create_task(execute_verify_chunk(job_id, chunk))
+
+                        elif msg_type == "direct_message":
+                            payload = data.get("payload", {})
+                            source = data.get("source")
+
+                            if payload.get("action") == "job_sync":
+                                print(f"[Sync] Received job state from {source}")
+                                job_id = payload.get("job_id")
+                                status = payload.get("status")
+                                if job_id and status is not None:
+                                    if isinstance(status, dict):
+                                        chunks = status.get("chunks")
+                                        if isinstance(chunks, list):
+                                            status["chunks"] = set(chunks)
+                                    local = job_cache.get(job_id, {})
+                                    local_chunks = local.get("chunks", set())
+                                    incoming_chunks = status.get("chunks", set())
+                                    local["chunks"] = local_chunks.union(set(incoming_chunks))
+
+                                    priority = {"pending": 0, "running": 1, "completed": 2}
+                                    local_status = local.get("status", "pending")
+                                    incoming_status = status.get("status", "pending")
+                                    if priority.get(incoming_status, 0) > priority.get(local_status, 0):
+                                        local["status"] = incoming_status
+
+                                    local["last_updated"] = max(
+                                        local.get("last_updated", 0),
+                                        status.get("last_updated", 0)
+                                    )
+
+                                    if "cleanup_scheduled" not in local:
+                                        local["cleanup_scheduled"] = bool(
+                                            status.get("cleanup_scheduled", False)
+                                        )
+
+                                    local_chunk_data_map = local.get("chunk_data_map", {})
+                                    incoming_chunk_data_map = status.get("chunk_data_map", {})
+                                    if isinstance(local_chunk_data_map, dict) and isinstance(incoming_chunk_data_map, dict):
+                                        local_chunk_data_map.update(incoming_chunk_data_map)
+                                        local["chunk_data_map"] = local_chunk_data_map
+
+                                    job_cache[job_id] = local
+                            elif payload.get("action") == "job_cleanup":
+                                job_id = payload.get("job_id")
+                                if job_id:
+                                    job_cache.pop(job_id, None)
+                                    print(f"[Sync] Removed cleaned job {job_id} from cache")
+
+                            print(f"[P2P] Message from {source}: {payload}")
 
             except Exception as e:
 
