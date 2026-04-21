@@ -329,22 +329,36 @@ def auto_calculate_chunks():
 
 
 def apply_reducer(results, reducer):
-    values = [v for v in results.values() if v is not None]
+    values = []
+
+    for v in results.values():
+        if isinstance(v, (int, float)):
+            values.append(v)
+            continue
+
+        if v is None:
+            continue
+
+        try:
+            values.append(int(v))
+        except Exception:
+            try:
+                values.append(float(v))
+            except Exception:
+                continue
 
     if not values:
+        print("WARNING: No valid numeric values for reducer")
         return None
 
     if reducer == "sum":
-        return sum(v for v in values if isinstance(v, (int, float)))
+        return sum(values)
     if reducer == "avg":
-        nums = [v for v in values if isinstance(v, (int, float))]
-        return sum(nums) / len(nums) if nums else None
+        return sum(values) / len(values)
     if reducer == "max":
-        nums = [v for v in values if isinstance(v, (int, float))]
-        return max(nums) if nums else None
+        return max(values)
     if reducer == "min":
-        nums = [v for v in values if isinstance(v, (int, float))]
-        return min(nums) if nums else None
+        return min(values)
     if reducer == "list":
         return values
 
@@ -352,6 +366,7 @@ def apply_reducer(results, reducer):
 
 
 def compute_final_result(job):
+    print("RAW RESULTS:", job.get("results", {}))
     return apply_reducer(
         job.get("results", {}),
         job.get("reducer", "sum")
@@ -415,18 +430,20 @@ def build_chunks_data(config, fallback_chunks):
 
 def parse_result_value(raw_result):
     if raw_result is None:
-        parsed_result = ""
-    else:
-        parsed_result = str(raw_result).strip().splitlines()
-        parsed_result = parsed_result[-1].strip() if parsed_result else ""
+        return None
+
+    last = ""
+    try:
+        lines = str(raw_result).strip().splitlines()
+        last = lines[-1].strip() if lines else ""
+        return int(last)
+    except Exception:
+        pass
 
     try:
-        return int(parsed_result)
+        return float(last)
     except Exception:
-        try:
-            return float(parsed_result)
-        except Exception:
-            return None
+        return None
 
 
 def get_completed_count(job):
@@ -731,7 +748,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     total_chunks = job.get("total_chunks", job.get("chunks", 0))
                     if len(completed_chunks) >= total_chunks:
                         job["status"] = "completed"
-                        job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
 
                 if status == "failed":
