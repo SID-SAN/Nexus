@@ -367,7 +367,12 @@ def apply_reducer(results, reducer):
 
 def compute_final_result(job):
     results = job.get("results", {})
-    print("RAW RESULTS:", results)
+
+    # 🔥 FILL MISSING RESULTS FROM logs OR DEFAULT
+    for chunk, status in job.get("status_map", {}).items():
+        if status == "completed" and chunk not in results:
+            print(f"[Fix] Missing result for chunk {chunk}, setting fallback")
+            results[chunk] = None  # or None-safe fallback
 
     valid_values = [
         v for v in results.values()
@@ -376,13 +381,11 @@ def compute_final_result(job):
 
     if not valid_values:
         print("❌ No valid results — marking job failed")
-
         job["status"] = "failed"
         job["final_result"] = None
         return None
 
     return apply_reducer(results, job.get("reducer", "sum"))
-
 
 def extract_config(zip_path):
     try:
@@ -810,6 +813,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job["updated_at"] = time.time()
                     print("Retries:", job["retries"])
 
+                    total = job["chunks"]
+
                     completed_chunks = [
                         c for c, s in job["status_map"].items()
                         if s == "completed"
@@ -820,7 +825,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         if s == "failed"
                     ]
 
-                    if len(job.get("results", {})) >= job["chunks"]:
+                    # 🔥 COMPLETE if ALL chunks are done (success OR fail)
+                    if len(completed_chunks) + len(failed_chunks) == total:
                         job["status"] = "completed"
                         job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
@@ -833,6 +839,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 raw_result = payload.get("result")
                 val = parse_result_value(raw_result)
+                if val is None:
+                    print(f"[Parse Warning] Chunk {chunk_key} produced invalid result: {raw_result}")
 
                 verification_map = job.setdefault("verifications", {})
                 chunk_verify = verification_map.setdefault(chunk_key, {})
@@ -911,6 +919,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job.setdefault("results", {})
                     final_val = original_val if original_val is not None else verify_val
                     job["results"][chunk_key] = final_val
+                    print(f"[DEBUG] STORED RESULT → chunk {chunk_key}: {final_val}")
 
                     job["status_map"][chunk_key] = "completed"
                     job.get("retry_count", {}).pop(chunk_key, None)
@@ -1002,6 +1011,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 job["updated_at"] = time.time()
 
+                total = job["chunks"]
+
                 completed_chunks = [
                     c for c, s in job["status_map"].items()
                     if s == "completed"
@@ -1012,7 +1023,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if s == "failed"
                 ]
 
-                if len(job.get("results", {})) >= job["chunks"]:
+                # 🔥 COMPLETE if ALL chunks are done (success OR fail)
+                if len(completed_chunks) + len(failed_chunks) == total:
                     job["status"] = "completed"
                     job["final_result"] = compute_final_result(job)
                     job["completed_at"] = time.time()
