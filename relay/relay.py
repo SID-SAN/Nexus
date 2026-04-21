@@ -340,13 +340,22 @@ def apply_reducer(results, reducer):
         nums = [v for v in values if isinstance(v, (int, float))]
         return sum(nums) / len(nums) if nums else None
     if reducer == "max":
-        return max(values)
+        nums = [v for v in values if isinstance(v, (int, float))]
+        return max(nums) if nums else None
     if reducer == "min":
-        return min(values)
+        nums = [v for v in values if isinstance(v, (int, float))]
+        return min(nums) if nums else None
     if reducer == "list":
         return values
 
     return None
+
+
+def compute_final_result(job):
+    return apply_reducer(
+        job.get("results", {}),
+        job.get("reducer", "sum")
+    )
 
 
 def extract_config(zip_path):
@@ -600,6 +609,7 @@ async def submit_job(
         "retries": {},
         "retry_count": {},
         "status": "running",
+        "final_result": None,
         "reducer": reducer,
         "price": price,
         "owner": user["user_id"],
@@ -721,6 +731,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     total_chunks = job.get("total_chunks", job.get("chunks", 0))
                     if len(completed_chunks) >= total_chunks:
                         job["status"] = "completed"
+                        job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
 
                 if status == "failed":
@@ -785,6 +796,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                     if len(completed_chunks) == job["chunks"]:
                         job["status"] = "completed"
+                        job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
                     elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
                         job["status"] = "failed"
@@ -872,7 +884,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 chunk_verify[node_id] = verify_val
 
                 if original_val == verify_val:
-                    job["results"][chunk_key] = original_val
+                    if original_val is not None:
+                        job["results"][chunk_key] = original_val
                     job["status_map"][chunk_key] = "completed"
                     job.get("retry_count", {}).pop(chunk_key, None)
 
@@ -975,6 +988,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 if len(completed_chunks) == job["chunks"]:
                     job["status"] = "completed"
+                    job["final_result"] = compute_final_result(job)
                     job["completed_at"] = time.time()
                 elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
                     job["status"] = "failed"
@@ -1020,7 +1034,11 @@ def job_result(job_id: str, api_key: str):
     if job["status"] != "completed":
         return {"status": "running"}
 
-    return {"result": apply_reducer(job["results"], job["reducer"])}
+    final_result = job.get("final_result")
+    if final_result is None:
+        final_result = compute_final_result(job)
+        job["final_result"] = final_result
+    return {"result": final_result}
 
 
 @app.get("/all_jobs")
@@ -1055,10 +1073,16 @@ def all_jobs(api_key: str):
             "status": job["status"],
             "completed": completed,
             "total": total,
-            "result": apply_reducer(job["results"], job["reducer"]) if job["status"] == "completed" else None,
+            "result": None,
             "duration": duration,
             "speed": speed
         }
+        if job["status"] == "completed":
+            final_result = job.get("final_result")
+            if final_result is None:
+                final_result = compute_final_result(job)
+                job["final_result"] = final_result
+            out[jid]["result"] = final_result
 
     return out
 
