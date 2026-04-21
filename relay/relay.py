@@ -366,11 +366,22 @@ def apply_reducer(results, reducer):
 
 
 def compute_final_result(job):
-    print("RAW RESULTS:", job.get("results", {}))
-    return apply_reducer(
-        job.get("results", {}),
-        job.get("reducer", "sum")
-    )
+    results = job.get("results", {})
+    print("RAW RESULTS:", results)
+
+    valid_values = [
+        v for v in results.values()
+        if isinstance(v, (int, float))
+    ]
+
+    if not valid_values:
+        print("❌ No valid results — marking job failed")
+
+        job["status"] = "failed"
+        job["final_result"] = None
+        return None
+
+    return apply_reducer(results, job.get("reducer", "sum"))
 
 
 def extract_config(zip_path):
@@ -432,16 +443,20 @@ def parse_result_value(raw_result):
     if raw_result is None:
         return None
 
-    last = ""
     try:
-        lines = str(raw_result).strip().splitlines()
-        last = lines[-1].strip() if lines else ""
-        return int(last)
-    except Exception:
-        pass
+        import re
 
-    try:
-        return float(last)
+        # extract last number from string
+        matches = re.findall(r"-?\d+\.?\d*", str(raw_result))
+        if not matches:
+            return None
+
+        val = matches[-1]
+
+        if "." in val:
+            return float(val)
+        return int(val)
+
     except Exception:
         return None
 
@@ -731,8 +746,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if not job or job["status"] == "cancelled":
                     continue
 
-                if chunk_key in job["results"]:
-                    continue
                 if job["status_map"].get(chunk_key) == "completed":
                     continue
                 if job["status_map"].get(chunk_key) == "failed":
@@ -746,9 +759,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     completed_chunks.add(chunk_key)
 
                     total_chunks = job.get("total_chunks", job.get("chunks", 0))
-                    if len(completed_chunks) >= total_chunks:
-                        job["status"] = "completed"
-                        job["completed_at"] = time.time()
 
                 if status == "failed":
                     stats = get_node_stats(node_id)
@@ -810,7 +820,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         if s == "failed"
                     ]
 
-                    if len(completed_chunks) == job["chunks"]:
+                    if len(job.get("results", {})) >= job["chunks"]:
                         job["status"] = "completed"
                         job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
@@ -861,8 +871,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 if not job or job["status"] == "cancelled":
                     continue
 
-                if chunk_key in job["results"]:
-                    continue
                 if job["status_map"].get(chunk_key) == "completed":
                     continue
                 if job["status_map"].get(chunk_key) == "failed":
@@ -900,8 +908,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 chunk_verify[node_id] = verify_val
 
                 if original_val == verify_val:
-                    if original_val is not None:
-                        job["results"][chunk_key] = original_val
+                    job.setdefault("results", {})
+                    final_val = original_val if original_val is not None else verify_val
+                    job["results"][chunk_key] = final_val
+
                     job["status_map"][chunk_key] = "completed"
                     job.get("retry_count", {}).pop(chunk_key, None)
 
@@ -1002,7 +1012,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if s == "failed"
                 ]
 
-                if len(completed_chunks) == job["chunks"]:
+                if len(job.get("results", {})) >= job["chunks"]:
                     job["status"] = "completed"
                     job["final_result"] = compute_final_result(job)
                     job["completed_at"] = time.time()
