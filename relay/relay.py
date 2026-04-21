@@ -452,6 +452,23 @@ async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
     print(f"[Verify] Forwarded chunk {chunk_key} for job {job_id} to {target_node}")
 
 
+async def broadcast_job_manifest(job_id, job):
+    chunk_data_map = {
+        str(c["id"]): c
+        for c in job.get("chunks_data", [])
+    }
+    message = {
+        "type": "job_manifest",
+        "payload": {
+            "job_id": job_id,
+            "total_chunks": job.get("chunks", 0),
+            "chunk_data": chunk_data_map
+        }
+    }
+    for node_id, ws in list(connected_nodes.items()):
+        await safe_send(ws, message, node_id)
+
+
 # -----------------------------
 # STARTUP
 # -----------------------------
@@ -580,6 +597,7 @@ async def submit_job(
     }
 
     save_jobs(jobs)
+    asyncio.create_task(broadcast_job_manifest(job_id, jobs[job_id]))
 
     return {"job_id": job_id, "chunks": total_chunks}
 
@@ -611,6 +629,20 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     node_last_seen[node_id] = time.time()
 
     print(f"Node connected: {node_id}")
+    for jid, job in jobs.items():
+        if job.get("status") != "running":
+            continue
+        await safe_send(websocket, {
+            "type": "job_manifest",
+            "payload": {
+                "job_id": jid,
+                "total_chunks": job.get("chunks", 0),
+                "chunk_data": {
+                    str(c["id"]): c
+                    for c in job.get("chunks_data", [])
+                }
+            }
+        }, node_id)
 
     try:
         while True:
@@ -644,114 +676,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 }, target)
 
             elif msg_type == "request_chunk":
-
-                best_job = None
-                best_score = float("inf")
-
-                for jid, job in jobs.items():
-
-                    if job["status"] != "running":
-                        continue
-
-                    if not job["queue"]:
-                        continue
-
-                    owner = job.get("owner")
-
-                    user_load = get_user_load(owner)
-
-                    completed = len(job["results"])
-                    total = job["chunks"]
-
-                    progress = completed / total if total else 1
-
-                    size_penalty = (total ** 0.5) / 15
-
-                    # 🔥 NEW: fairness penalty
-                    fairness_penalty = user_load * 0.1
-
-                    node_score = get_node_score(node_id)
-                    reliability_penalty = (1 - node_score) * 2
-                    score = progress + size_penalty + fairness_penalty + reliability_penalty
-
-                    score += random.uniform(0, 0.05)
-
-                    if score < best_score:
-                        best_score = score
-                        best_job = (jid, job)
-
-                if not best_job:
-                    continue
-
-                jid, job = best_job
-                if job.get("status") in ("completed", "failed"):
-                    continue
-
-                node_capacity = get_node_capacity(node_id)
-                total_available = len(job["queue"])
-
-                node_score = get_node_score(node_id)
-                adjusted_capacity = int(node_capacity * node_score)
-                batch_size = min(
-                    max(1, adjusted_capacity // 20),
-                    max(1, total_available)
-                )
-                if get_node_score(node_id) < 0.2:
-                    continue
-
-                assigned = []
-
-                for _ in range(batch_size):
-                    chunk = None
-
-                    while job["queue"] and chunk is None:
-                        candidate = job["queue"].pop(0)
-                        candidate_key = str(candidate)
-
-                        if candidate_key in job["results"]:
-                            continue
-
-                        candidate_status = job["status_map"].get(candidate_key)
-                        verification_count = len(
-                            job.get("verifications", {}).get(candidate_key, {})
-                        )
-
-                        # Allow reassignment while the chunk is not completed and
-                        # still needs independent verification votes.
-                        if candidate_status in ("completed", "failed") or verification_count >= 2:
-                            continue
-
-                        # Skip assigning the same verification chunk to a node
-                        # that has already submitted a vote for it.
-                        if node_id in job.get("verifications", {}).get(candidate_key, {}):
-                            continue
-
-                        chunk = candidate
-
-                    if chunk is None:
-                        break
-
-                    chunk_key = str(chunk)
-                    job["status_map"][chunk_key] = "running"
-                    job["assigned_at"][chunk_key] = time.time()
-                    job["retries"].setdefault(chunk_key, 0)
-
-                    assigned.append(chunk)
-
-                if assigned:
-                    chunk_data_map = {
-                        str(c["id"]): c
-                        for c in job.get("chunks_data", [])
-                    }
-                    await safe_send(websocket, {
-                        "type": "assign_chunk_batch",
-                        "payload": {
-                            "job_id": jid,
-                            "chunks": assigned,
-                            "total_chunks": job["chunks"],
-                            "chunk_data": chunk_data_map
-                        }
-                    }, node_id)
+                # Relay no longer assigns chunks. Nodes schedule locally.
+                continue
 
             elif msg_type == "submit_result":
 
