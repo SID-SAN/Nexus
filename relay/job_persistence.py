@@ -39,4 +39,8 @@ def load_jobs():
         if isinstance(rewarded_chunks, list):
             job["rewarded_chunks"] = set(rewarded_chunks)
 
+        completed_chunks = job.get("completed_chunks")
+        if isinstance(completed_chunks, list):
+            job["completed_chunks"] = set(completed_chunks)
+
     return jobs

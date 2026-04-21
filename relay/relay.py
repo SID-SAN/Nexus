@@ -420,6 +420,15 @@ def parse_result_value(raw_result):
             return None
 
 
+def get_completed_count(job):
+    completed_chunks = job.get("completed_chunks")
+    if isinstance(completed_chunks, set):
+        return len(completed_chunks)
+    if isinstance(completed_chunks, list):
+        return len(completed_chunks)
+    return len(job.get("results", {}))
+
+
 async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
     verify_requests = job.setdefault("verify_requests", {})
 
@@ -577,9 +586,11 @@ async def submit_job(
     jobs[job_id] = {
         "name": job_name,
         "chunks": total_chunks,
+        "total_chunks": total_chunks,
         "chunks_data": chunks_data,
         "queue": [c["id"] for c in chunks_data],
         "results": {},
+        "completed_chunks": set(),
         "verifications": {},
         "rewarded_chunks": set(),
         "logs": {},
@@ -699,6 +710,18 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
                 if job["status_map"].get(chunk_key) == "failed":
                     continue
+
+                if status == "success":
+                    completed_chunks = job.setdefault("completed_chunks", set())
+                    if isinstance(completed_chunks, list):
+                        completed_chunks = set(completed_chunks)
+                        job["completed_chunks"] = completed_chunks
+                    completed_chunks.add(chunk_key)
+
+                    total_chunks = job.get("total_chunks", job.get("chunks", 0))
+                    if len(completed_chunks) >= total_chunks:
+                        job["status"] = "completed"
+                        job["completed_at"] = time.time()
 
                 if status == "failed":
                     stats = get_node_stats(node_id)
@@ -975,12 +998,12 @@ def job_status(job_id: str):
     if not job:
         return {"error": "not found"}
 
-    completed = len(job["results"])
+    completed = get_completed_count(job)
 
     return {
         "status": job["status"],
         "completed": completed,
-        "total": job["chunks"]
+        "total": job.get("total_chunks", job["chunks"])
     }
 
 
@@ -1015,8 +1038,8 @@ def all_jobs(api_key: str):
         if job.get("owner") != user_id:
             continue
 
-        completed = len(job["results"])
-        total = job["chunks"]
+        completed = get_completed_count(job)
+        total = job.get("total_chunks", job["chunks"])
 
         end_time = job.get("completed_at", now)
         duration = int(end_time - job.get("created_at", now))
@@ -1059,8 +1082,8 @@ def cancel_job(job_id: str, api_key: str):
     job["status"] = "cancelled"
     job["completed_at"] = time.time()
 
-    completed = len(job["results"])
-    total = job["chunks"]
+    completed = get_completed_count(job)
+    total = job.get("total_chunks", job["chunks"])
     price = job.get("price", 0)
 
     used = (completed / total) * price

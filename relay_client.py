@@ -223,7 +223,7 @@ async def execute_chunk_task(job_id, chunk):
         state["in_progress"].discard(chunk)
         return
 
-    chunk_data = state.get("chunk_data_map", {})
+    chunk_data = state.get("chunk_data_map", {}).get(str(chunk), {})
 
     active_chunks += 1
     try:
@@ -251,24 +251,27 @@ async def execute_chunk_task(job_id, chunk):
     if exec_output.get("status") == "success":
         is_verified = await request_verification(job_id, chunk, exec_output.get("result"))
         if is_verified:
-            state["completed"].add(chunk)
-            state["in_progress"].discard(chunk)
-            state["last_updated"] = time.time()
+            state = job_cache.get(job_id)
+            if state:
+                if chunk not in state["completed"]:
+                    state["completed"].add(chunk)
+                    state["in_progress"].discard(chunk)
+                    state["last_updated"] = time.time()
 
-            await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
+                    await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
 
-            await send_queue.put({
-                "type": "submit_result",
-                "source": get_node_id(),
-                "payload": {
-                    "job_id": job_id,
-                    "chunk": chunk,
-                    "status": "success",
-                    "result": exec_output.get("result"),
-                    "logs": exec_output.get("logs", ""),
-                    "error": ""
-                }
-            })
+                    await send_queue.put({
+                        "type": "submit_result",
+                        "source": get_node_id(),
+                        "payload": {
+                            "job_id": job_id,
+                            "chunk": chunk,
+                            "status": "success",
+                            "result": exec_output.get("result"),
+                            "logs": exec_output.get("logs", ""),
+                            "error": ""
+                        }
+                    })
         else:
             await asyncio.sleep(FAILED_CHUNK_BACKOFF)
             state["in_progress"].discard(chunk)
@@ -471,9 +474,10 @@ async def connect_to_relay():
                                 if job_id is None or chunk is None:
                                     continue
                                 state = init_job(job_id)
-                                state["completed"].add(chunk)
-                                state["in_progress"].discard(chunk)
-                                state["last_updated"] = time.time()
+                                if chunk not in state["completed"]:
+                                    state["completed"].add(chunk)
+                                    state["in_progress"].discard(chunk)
+                                    state["last_updated"] = time.time()
 
                             elif action == "verify_chunk":
                                 job_id = payload.get("job_id")
