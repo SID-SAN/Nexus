@@ -8,3 +8,4 @@ dist/
 jobs/
 job_test/
 *.zip
+tests/

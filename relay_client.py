@@ -5,10 +5,13 @@ import os
 import time
 import random
 from urllib.parse import quote
-
 from node.downloader import download_job
 from node.executor import execute_chunk
 from config import RELAY_URLS
+
+claim_lock = asyncio.Lock()
+current_relay = None
+MAX_RETRIES = 5
 
 
 def get_node_id():
@@ -17,10 +20,6 @@ def get_node_id():
 
 def get_api_key():
     return os.getenv("API_KEY")
-
-
-current_relay = None
-
 
 def get_relay_ws_url(base_url, node_id, api_key):
     relay_base = base_url
@@ -37,7 +36,7 @@ websocket_connection = None
 known_peers = set()
 job_cache = {}
 pending_verifications = {}
-send_queue = asyncio.Queue()
+send_queue = asyncio.Queue(maxsize=1000)
 work_loop_started = False
 
 active_chunks = 0
@@ -47,6 +46,16 @@ CLAIM_JITTER_MAX = 0.2
 FAILED_CHUNK_BACKOFF = 1
 COMPLETED_JOB_TTL = 120
 STALE_JOB_TTL = 3600
+
+
+async def enqueue_message(message):
+    try:
+        await send_queue.put({
+            "data": message,
+            "retries": 0
+        })
+    except asyncio.QueueFull:
+        print("[Sender] Queue full, dropping message")
 
 
 def build_job_state(job):
@@ -100,7 +109,7 @@ def pick_next_chunk():
 async def broadcast_action(action, **kwargs):
     peers = list(known_peers)
     for peer_id in peers:
-        await send_queue.put({
+        await enqueue_message({
             "type": "direct_message",
             "payload": {
                 "target": peer_id,
@@ -123,7 +132,7 @@ async def send_job_sync(job_id):
     payload_state = build_job_state(state)
 
     for peer_id in selected_peers:
-        await send_queue.put({
+        await enqueue_message({
             "type": "direct_message",
             "payload": {
                 "target": peer_id,
@@ -152,7 +161,7 @@ async def request_verification(job_id, chunk, original_result):
     fut = loop.create_future()
     pending_verifications[key] = fut
 
-    await send_queue.put({
+    await enqueue_message({
         "type": "direct_message",
         "payload": {
             "target": peer,
@@ -198,7 +207,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
             "error": str(e)
         }
 
-    await send_queue.put({
+    await enqueue_message({
         "type": "direct_message",
         "payload": {
             "target": target_node,
@@ -260,7 +269,7 @@ async def execute_chunk_task(job_id, chunk):
 
                     await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
 
-                    await send_queue.put({
+                    await enqueue_message({
                         "type": "submit_result",
                         "source": get_node_id(),
                         "payload": {
@@ -312,14 +321,16 @@ async def scheduler_loop():
 
         await asyncio.sleep(random.uniform(0, CLAIM_JITTER_MAX))
 
-        # Re-check after jitter to reduce claim collisions.
-        available = state["chunks"] - state["in_progress"] - state["completed"]
-        if chunk not in available or state.get("status") != "running":
-            await asyncio.sleep(0.05)
-            continue
+        async with claim_lock:
+            # 🔥 RE-CHECK INSIDE LOCK (CRITICAL)
+            available = state["chunks"] - state["in_progress"] - state["completed"]
 
-        state["in_progress"].add(chunk)
-        state["last_updated"] = time.time()
+            if chunk not in available or state.get("status") != "running":
+                continue
+
+            # 🔥 ATOMIC CLAIM
+            state["in_progress"].add(chunk)
+            state["last_updated"] = time.time()
 
         await broadcast_action("claim_chunk", job_id=job_id, chunk=chunk)
         asyncio.create_task(execute_chunk_task(job_id, chunk))
@@ -353,19 +364,31 @@ async def sender_loop():
     global websocket_connection
 
     while True:
-        message = await send_queue.get()
-
+        wrapped = await send_queue.get()
+        message = wrapped["data"]
+        retries = wrapped.get("retries", 0)
         if websocket_connection is None:
             await asyncio.sleep(1)
-            await send_queue.put(message)
+
+            if retries < MAX_RETRIES:
+                wrapped["retries"] = retries + 1
+                await send_queue.put(wrapped)
+            else:
+                print(f"[Sender] Dropping message after {MAX_RETRIES} retries")
+
             continue
 
         try:
             await websocket_connection.send(json.dumps(message))
         except Exception as e:
             print(f"[Sender] Retry sending: {e}")
-            await asyncio.sleep(1)
-            await send_queue.put(message)
+
+            if retries < MAX_RETRIES:
+                wrapped["retries"] = retries + 1
+                await asyncio.sleep(1)
+                await send_queue.put(wrapped)
+            else:
+                print(f"[Sender] Dropping failed message after {MAX_RETRIES} retries")
 
 
 def merge_job_state(local, incoming):
@@ -435,7 +458,10 @@ async def connect_to_relay():
                         msg_type = data.get("type")
 
                         if msg_type == "heartbeat":
-                            await send_queue.put({"type": "heartbeat_ack", "source": get_node_id()})
+                            await enqueue_message({
+                                "type": "heartbeat_ack",
+                                "source": get_node_id()
+                            })
 
                         elif msg_type == "peer_list":
                             peers = data.get("nodes", [])

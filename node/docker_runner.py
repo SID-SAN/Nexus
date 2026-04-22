@@ -1,11 +1,8 @@
 import os
 import shlex
 import subprocess
-from unittest import result
-import uuid
 
 IMAGE_NAME = "nexus-base"
-
 
 def _ensure_deps_installed(extract_path):
     marker = os.path.join(extract_path, ".deps_installed")
