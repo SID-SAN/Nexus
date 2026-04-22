@@ -9,18 +9,8 @@ import hashlib
 import random
 import zipfile
 from relay.job_persistence import load_jobs, save_jobs
-from supabase import create_client
-from dotenv import load_dotenv
-
-load_dotenv()
+from db import supabase
 app = FastAPI()
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise Exception("Missing Supabase environment variables")
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # -----------------------------
 # Storage
 # -----------------------------
@@ -70,8 +60,18 @@ def update_user_credits_by_api_key(api_key, new_credits):
     print("UPDATE RESULT:", res)
 
 
+import bcrypt
+
 def hash_password(password: str):
-    return hashlib.sha256(password.encode()).hexdigest()
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password: str, stored_hash: str):
+    try:
+        if stored_hash.startswith("$2b$"):
+            return bcrypt.checkpw(password.encode(), stored_hash.encode())
+
+    except Exception:
+        return False
 
 def get_user_load(user_id):
     load = 0
@@ -1211,17 +1211,27 @@ def get_user(api_key: str):
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...)):
 
-    hashed = hash_password(password)
     res = supabase.table("users")\
         .select("*")\
         .eq("email", email)\
-        .eq("password", hashed)\
         .execute()
 
     if not res.data:
         return {"error": "invalid credentials"}
 
     user = res.data[0]
+
+    if not verify_password(password, user["password"]):
+        return {"error": "invalid credentials"}
+
+    if not user["password"].startswith("$2b$"):
+        new_hash = hash_password(password)
+        supabase.table("users")\
+            .update({"password": new_hash})\
+            .eq("user_id", user["user_id"])\
+            .execute()
+
+        print(f"[Auth] Upgraded user {user['user_id']} to bcrypt")
 
     return {
         "api_key": user["api_key"],
