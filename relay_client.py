@@ -4,9 +4,10 @@ import json
 import os
 import time
 import random
+import re
 from urllib.parse import quote
 from node.downloader import download_job
-from node.executor import execute_chunk
+from node.executor import execute_chunk, cleanup_job as cleanup_job_files
 from config import RELAY_URLS
 
 claim_lock = asyncio.Lock()
@@ -46,6 +47,11 @@ CLAIM_JITTER_MAX = 0.2
 FAILED_CHUNK_BACKOFF = 1
 COMPLETED_JOB_TTL = 120
 STALE_JOB_TTL = 3600
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+def is_valid_job_id(job_id):
+    return bool(JOB_ID_RE.fullmatch(str(job_id or "")))
 
 
 async def enqueue_message(message):
@@ -143,7 +149,7 @@ async def send_job_sync(job_id):
         })
 
 
-async def cleanup_job(job_id):
+async def cleanup_job_cache(job_id):
     await asyncio.sleep(60)
     if job_id in job_cache:
         await broadcast_action("job_cleanup", job_id=job_id)
@@ -186,7 +192,13 @@ async def execute_verify_chunk(job_id, chunk, target_node):
     print(f"[Verify] Verifying chunk {chunk} for job {job_id}")
 
     try:
-        if not os.path.exists(f"jobs/{job_id}.zip") and not os.path.exists(f"jobs/{job_id}"):
+        if not is_valid_job_id(job_id):
+            raise ValueError("Invalid job_id")
+
+        jobs_base = os.path.abspath("jobs")
+        zip_path = os.path.join(jobs_base, f"{job_id}.zip")
+        extract_path = os.path.join(jobs_base, str(job_id))
+        if not os.path.exists(zip_path) and not os.path.exists(extract_path):
             download_job(job_id)
 
         chunk_data = job_cache.get(job_id, {}).get("chunk_data_map", {}).get(str(chunk), {})
@@ -225,7 +237,13 @@ async def execute_chunk_task(job_id, chunk):
         return
 
     try:
-        if not os.path.exists(f"jobs/{job_id}.zip") and not os.path.exists(f"jobs/{job_id}"):
+        if not is_valid_job_id(job_id):
+            raise ValueError("Invalid job_id")
+
+        jobs_base = os.path.abspath("jobs")
+        zip_path = os.path.join(jobs_base, f"{job_id}.zip")
+        extract_path = os.path.join(jobs_base, str(job_id))
+        if not os.path.exists(zip_path) and not os.path.exists(extract_path):
             download_job(job_id)
     except Exception:
         print("[Node] Cannot download job package")
@@ -294,7 +312,7 @@ async def execute_chunk_task(job_id, chunk):
         await broadcast_action("job_complete", job_id=job_id)
         if not state.get("cleanup_scheduled"):
             state["cleanup_scheduled"] = True
-            asyncio.create_task(cleanup_job(job_id))
+            asyncio.create_task(cleanup_job_cache(job_id))
 
     await send_job_sync(job_id)
 
@@ -471,7 +489,7 @@ async def connect_to_relay():
                         elif msg_type == "job_manifest":
                             payload = data.get("payload", {})
                             job_id = payload.get("job_id")
-                            if not job_id:
+                            if not job_id or not is_valid_job_id(job_id):
                                 continue
 
                             total_chunks = int(payload.get("total_chunks", 0) or 0)
@@ -479,6 +497,13 @@ async def connect_to_relay():
                             state = init_job(job_id, total_chunks=total_chunks, chunk_data_map=chunk_data)
                             state["status"] = "running"
                             state["last_updated"] = time.time()
+
+                        elif msg_type == "cleanup_job":
+                            payload = data.get("payload", {})
+                            job_id = payload.get("job_id")
+                            if job_id and is_valid_job_id(job_id):
+                                await asyncio.to_thread(cleanup_job_files, job_id)
+                                job_cache.pop(job_id, None)
 
                         elif msg_type == "direct_message":
                             payload = data.get("payload", {})

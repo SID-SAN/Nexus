@@ -1,8 +1,24 @@
 import os
-import shlex
+import re
 import subprocess
 
 IMAGE_NAME = "nexus-base"
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
+BASE_JOBS_DIR = os.path.abspath("jobs")
+
+
+def _is_valid_job_id(job_id: str) -> bool:
+    return bool(JOB_ID_RE.fullmatch(job_id or ""))
+
+
+def _safe_job_dir(job_id: str) -> str:
+    if not _is_valid_job_id(job_id):
+        raise ValueError("Invalid job_id")
+
+    path = os.path.abspath(os.path.join(BASE_JOBS_DIR, job_id))
+    if os.path.commonpath([BASE_JOBS_DIR, path]) != BASE_JOBS_DIR:
+        raise ValueError("Path traversal detected")
+    return path
 
 def _ensure_deps_installed(extract_path):
     marker = os.path.join(extract_path, ".deps_installed")
@@ -23,8 +39,8 @@ def _ensure_deps_installed(extract_path):
 
 
 def run_in_docker(job_id, args):
-    extract_path = os.path.abspath(f"jobs/{job_id}")
-    arg_text = " ".join([shlex.quote(str(a)) for a in args])
+    extract_path = _safe_job_dir(str(job_id))
+    python_args = [str(a) for a in args]
 
     cmd = [
         "docker", "run",
@@ -35,9 +51,8 @@ def run_in_docker(job_id, args):
         "-v", f"{extract_path}:/app",
         "-w", "/app",
         IMAGE_NAME,
-        "sh", "-lc",
-        f"python task.py {arg_text}"
-    ]
+        "python", "task.py",
+    ] + python_args
 
     try:
         _ensure_deps_installed(extract_path)

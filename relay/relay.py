@@ -8,6 +8,7 @@ import time
 import hashlib
 import random
 import zipfile
+import re
 from relay.job_persistence import load_jobs, save_jobs
 from db import supabase
 app = FastAPI()
@@ -16,6 +17,8 @@ app = FastAPI()
 # -----------------------------
 JOB_DIR = "jobs"
 os.makedirs(JOB_DIR, exist_ok=True)
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
+JOB_DIR_ABS = os.path.abspath(JOB_DIR)
 
 connected_nodes = {}
 node_resources = {}
@@ -67,9 +70,10 @@ def hash_password(password: str):
 
 def verify_password(password: str, stored_hash: str):
     try:
-        if stored_hash.startswith("$2b$"):
-            return bcrypt.checkpw(password.encode(), stored_hash.encode())
+        if not stored_hash or not stored_hash.startswith("$2b$"):
+            return False
 
+        return bcrypt.checkpw(password.encode(), stored_hash.encode())
     except Exception:
         return False
 
@@ -107,6 +111,19 @@ async def safe_send(ws, message, node_id=None):
             connected_nodes.pop(node_id, None)
             node_resources.pop(node_id, None)
             node_last_seen.pop(node_id, None)
+
+
+async def send_cleanup_job(job_id, job):
+    if job.get("cleanup_sent"):
+        return
+
+    for node_id, ws in list(connected_nodes.items()):
+        await safe_send(ws, {
+            "type": "cleanup_job",
+            "payload": {"job_id": job_id}
+        }, node_id)
+
+    job["cleanup_sent"] = True
 
 
 # -----------------------------
@@ -250,6 +267,7 @@ async def monitor_jobs():
                 job["status"] = "completed"
                 job["final_result"] = compute_final_result(job)
                 job["completed_at"] = time.time()
+                await send_cleanup_job(job_id, job)
 
 
 # -----------------------------
@@ -442,6 +460,20 @@ def get_completed_count(job):
     return len(job.get("results", {}))
 
 
+def is_valid_job_id(job_id: str) -> bool:
+    return bool(JOB_ID_RE.fullmatch(job_id or ""))
+
+
+def safe_job_zip_path(job_id: str) -> str:
+    if not is_valid_job_id(job_id):
+        raise ValueError("Invalid job_id")
+
+    path = os.path.abspath(os.path.join(JOB_DIR_ABS, f"{job_id}.zip"))
+    if os.path.commonpath([JOB_DIR_ABS, path]) != JOB_DIR_ABS:
+        raise ValueError("Path traversal detected")
+    return path
+
+
 async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
     verify_requests = job.setdefault("verify_requests", {})
 
@@ -543,7 +575,11 @@ def cluster_status():
 
 @app.get("/jobs/{job_id}")
 def download_job(job_id: str):
-    path = f"{JOB_DIR}/{job_id}.zip"
+    try:
+        path = safe_job_zip_path(job_id)
+    except ValueError:
+        return {"error": "invalid job id"}
+
     return FileResponse(path) if os.path.exists(path) else {"error": "not found"}
 
 
@@ -799,6 +835,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job["status"] = "completed"
                         job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
+                        await send_cleanup_job(job_id, job)
                     elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
                         job["status"] = "failed"
                         job["completed_at"] = time.time()
@@ -1007,6 +1044,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job["status"] = "completed"
                     job["final_result"] = compute_final_result(job)
                     job["completed_at"] = time.time()
+                    await send_cleanup_job(job_id, job)
                 elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
                     job["status"] = "failed"
                     job["completed_at"] = time.time()
