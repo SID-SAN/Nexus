@@ -381,7 +381,9 @@ function updateStats(nodes, jobs) {
   });
 
   document.getElementById("runningCount").innerText = running;
-  const avg = (speed / (running || 1)).toFixed(2);
+  const avg = running > 0
+    ? (speed / running).toFixed(2)
+    : "0.00";
 
   document.getElementById("avgSpeed").innerText =
     avg + " chunks/s";

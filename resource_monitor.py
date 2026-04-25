@@ -18,7 +18,7 @@ async def resource_monitor_loop():
     while True:
 
         try:
-            cpu_usage = psutil.cpu_percent(interval=1)
+            cpu_usage = psutil.cpu_percent(interval=0.1)
             ram_usage = psutil.virtual_memory().percent
 
             print(f"[Resource] CPU: {cpu_usage}% | RAM: {ram_usage}%")

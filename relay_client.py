@@ -9,6 +9,7 @@ from urllib.parse import quote
 from node.downloader import download_job
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
 from config import RELAY_URLS
+import traceback
 
 claim_lock = asyncio.Lock()
 current_relay = None
@@ -112,6 +113,36 @@ def pick_next_chunk():
     return None, None
 
 
+def validate_chunk_data(chunk_data):
+    if not isinstance(chunk_data, dict):
+        return {}
+
+    valid_data = {}
+
+    for k, v in chunk_data.items():
+        # key must be numeric (chunk id)
+        if not str(k).isdigit():
+            continue
+
+        if not isinstance(v, dict):
+            continue
+
+        clean = {}
+
+        if "start" in v and isinstance(v["start"], int):
+            clean["start"] = v["start"]
+
+        if "end" in v and isinstance(v["end"], int):
+            clean["end"] = v["end"]
+
+        if "file" in v and isinstance(v["file"], str):
+            clean["file"] = v["file"]
+
+        valid_data[str(k)] = clean
+
+    return valid_data
+
+
 async def broadcast_action(action, **kwargs):
     peers = list(known_peers)
     for peer_id in peers:
@@ -211,6 +242,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
             "result": result["result"]
         }
     except Exception as e:
+        print(f"[Verify] Error: {e}")
         response_payload = {
             "job_id": job_id,
             "chunk": chunk,
@@ -245,8 +277,9 @@ async def execute_chunk_task(job_id, chunk):
         extract_path = os.path.join(jobs_base, str(job_id))
         if not os.path.exists(zip_path) and not os.path.exists(extract_path):
             download_job(job_id)
-    except Exception:
-        print("[Node] Cannot download job package")
+    except Exception as e:
+        print(f"[Node] Download failed: {e}")
+        traceback.print_exc()
         state["in_progress"].discard(chunk)
         return
 
@@ -400,6 +433,7 @@ async def sender_loop():
             await websocket_connection.send(json.dumps(message))
         except Exception as e:
             print(f"[Sender] Retry sending: {e}")
+            traceback.print_exc()
 
             if retries < MAX_RETRIES:
                 wrapped["retries"] = retries + 1
@@ -493,7 +527,8 @@ async def connect_to_relay():
                                 continue
 
                             total_chunks = int(payload.get("total_chunks", 0) or 0)
-                            chunk_data = payload.get("chunk_data", {})
+                            chunk_data_raw = payload.get("chunk_data", {})
+                            chunk_data = validate_chunk_data(chunk_data_raw)
                             state = init_job(job_id, total_chunks=total_chunks, chunk_data_map=chunk_data)
                             state["status"] = "running"
                             state["last_updated"] = time.time()
@@ -563,12 +598,9 @@ async def connect_to_relay():
                                 job_id = payload.get("job_id")
                                 if job_id:
                                     job_cache.pop(job_id, None)
-
             except Exception as e:
                 print(f"[Relay] Failed {base_url}: {e}")
-                websocket_connection = None
-                current_relay = None
-                os.environ.pop("RELAY_HTTP_URL", None)
+                traceback.print_exc()
 
         print("[Relay] All relays failed. Retrying in 3s...\n")
         await asyncio.sleep(3)

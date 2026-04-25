@@ -29,7 +29,7 @@ def safe_job_path(job_id):
 def safe_extract(zip_ref, path):
     for member in zip_ref.namelist():
         member_path = os.path.abspath(os.path.join(path, member))
-        if not member_path.startswith(path):
+        if os.path.commonpath([path, member_path]) != path:
             raise Exception("Zip path traversal detected")
     zip_ref.extractall(path)
 
@@ -38,15 +38,22 @@ def download_job(job_id):
         raise ValueError("Invalid job_id")
 
     zip_path = os.path.join(BASE_DIR, f"{job_id}.zip")
+    os.makedirs(extract_path, exist_ok=True)
     extract_path = safe_job_path(job_id)
 
     url = f"{get_active_relay()}/jobs/{job_id}"
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise Exception("Failed to download job")
+    try:
+        r = requests.get(url, stream=True, timeout=(5, 15))
+        r.raise_for_status()
+    except requests.exceptions.Timeout:
+        raise Exception("Download timed out")
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Download failed: {e}")
 
     with open(zip_path, "wb") as f:
-        f.write(r.content)
+        for chunk in r.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
 
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         safe_extract(zip_ref, extract_path)
