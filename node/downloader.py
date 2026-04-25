@@ -38,8 +38,9 @@ def download_job(job_id):
         raise ValueError("Invalid job_id")
 
     zip_path = os.path.join(BASE_DIR, f"{job_id}.zip")
-    os.makedirs(extract_path, exist_ok=True)
     extract_path = safe_job_path(job_id)
+    os.makedirs(extract_path, exist_ok=True)
+
 
     url = f"{get_active_relay()}/jobs/{job_id}"
     try:
