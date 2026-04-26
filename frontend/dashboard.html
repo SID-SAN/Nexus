@@ -172,47 +172,6 @@ function showLogin() {
     login.style.display === "block" ? "none" : "block";
 }
 
-// 🚀 FETCH
-async function fetchData() {
-  const apiKey = localStorage.getItem("api_key");
-  if (!apiKey) {
-    updateNodes({ connected_nodes: [] });
-    updateJobs({});
-    updateStats({ connected_nodes: [] }, {});
-    return;
-  }
-
-  try {
-    const nodesRes = await fetch(BASE_URL + "/cluster_status");
-    const jobsRes = await fetch(BASE_URL + "/all_jobs?api_key=" + apiKey);
-
-    const nodes = await nodesRes.json();
-    const jobs = await jobsRes.json();
-
-    updateNodes(nodes);
-    updateJobs(jobs);
-    updateStats(nodes, jobs);
-  } catch (e) {
-    console.error("Fetch error:", e);
-  }
-}
-
-async function fetchCredits() {
-
-  const apiKey = localStorage.getItem("api_key");
-  if (!apiKey) return;
-
-  try {
-    const res = await fetch(BASE_URL + `/user/${apiKey}`);
-    const data = await res.json();
-
-    document.getElementById("credits").innerText =
-      data.credits ?? 0;
-  } catch (e) {
-    console.error("Fetch error:", e);
-  }
-}
-
 // Login
 async function login() {
 
@@ -538,11 +497,28 @@ function toggleSubmit() {
     submit.style.display === "block" ? "none" : "block";
 }
 
-// 🔁 AUTO REFRESH
-setInterval(fetchData, 3000);
-fetchData();
-setInterval(fetchCredits, 5000);
-fetchCredits();
+async function pollDashboard() {
+  try {
+    const apiKey = localStorage.getItem("api_key");
+    if (!apiKey) return;
+
+    const [nodesRes, jobsRes] = await Promise.all([
+      fetch("/cluster_status"),
+      fetch("/all_jobs?api_key=" + apiKey)
+    ]);
+
+    const nodes = await nodesRes.json();
+    const jobs = await jobsRes.json();
+
+    updateNodes(nodes);
+    updateJobs(jobs);
+    updateStats(nodes, jobs);
+
+  } catch (err) {
+    console.error("Polling error:", err);
+  }
+}
+setInterval(pollDashboard, 4000);
 
 </script>
 </body>

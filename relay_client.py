@@ -14,6 +14,7 @@ import traceback
 claim_lock = asyncio.Lock()
 current_relay = None
 MAX_RETRIES = 5
+download_locks = {}
 
 
 def get_node_id():
@@ -33,6 +34,10 @@ def get_relay_ws_url(base_url, node_id, api_key):
 
     return f"{relay_base}/ws/{quote(node_id)}?api_key={quote(api_key)}"
 
+def get_download_lock(job_id):
+    if job_id not in download_locks:
+        download_locks[job_id] = asyncio.Lock()
+    return download_locks[job_id]
 
 websocket_connection = None
 known_peers = set()
@@ -86,6 +91,7 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
         "cleanup_scheduled": False,
         "chunk_data_map": {},
         "total_chunks": total_chunks,
+        "last_sync": 0,
         "last_updated": time.time()
     })
 
@@ -156,18 +162,23 @@ async def broadcast_action(action, **kwargs):
         })
 
 
+SYNC_INTERVAL = 5
 async def send_job_sync(job_id):
     state = job_cache.get(job_id)
     if not state:
         return
 
+    now = time.time()
+    if now - state.get("last_sync", 0) < SYNC_INTERVAL:
+        return
+
+    state["last_sync"] = now
     peers = list(known_peers)
     if not peers:
         return
 
     selected_peers = random.sample(peers, min(2, len(peers)))
     payload_state = build_job_state(state)
-
     for peer_id in selected_peers:
         await enqueue_message({
             "type": "direct_message",
@@ -208,15 +219,16 @@ async def request_verification(job_id, chunk, original_result):
         }
     })
 
+    pending_verifications[key] = fut
     try:
         verify_payload = await asyncio.wait_for(fut, timeout=VERIFY_TIMEOUT)
+        verify_status = verify_payload.get("status")
+        verify_result = verify_payload.get("result")
+        return verify_status == "success" and str(verify_result).strip() == str(original_result).strip()
     except asyncio.TimeoutError:
-        pending_verifications.pop(key, None)
         return False
-
-    verify_status = verify_payload.get("status")
-    verify_result = verify_payload.get("result")
-    return verify_status == "success" and str(verify_result).strip() == str(original_result).strip()
+    finally:
+        pending_verifications.pop(key, None)
 
 
 async def execute_verify_chunk(job_id, chunk, target_node):
@@ -229,8 +241,10 @@ async def execute_verify_chunk(job_id, chunk, target_node):
         jobs_base = os.path.abspath("jobs")
         zip_path = os.path.join(jobs_base, f"{job_id}.zip")
         extract_path = os.path.join(jobs_base, str(job_id))
-        if not os.path.exists(zip_path) and not os.path.exists(extract_path):
-            download_job(job_id)
+        lock = get_download_lock(job_id)
+        async with lock:
+            if not os.path.exists(zip_path) and not os.path.exists(extract_path):
+                await asyncio.to_thread(download_job, job_id)
 
         chunk_data = job_cache.get(job_id, {}).get("chunk_data_map", {}).get(str(chunk), {})
         result = await asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data)
@@ -275,8 +289,10 @@ async def execute_chunk_task(job_id, chunk):
         jobs_base = os.path.abspath("jobs")
         zip_path = os.path.join(jobs_base, f"{job_id}.zip")
         extract_path = os.path.join(jobs_base, str(job_id))
-        if not os.path.exists(zip_path) and not os.path.exists(extract_path):
-            download_job(job_id)
+        lock = get_download_lock(job_id)
+        async with lock:
+            if not os.path.exists(zip_path) and not os.path.exists(extract_path):
+                await asyncio.to_thread(download_job, job_id)
     except Exception as e:
         print(f"[Node] Download failed: {e}")
         traceback.print_exc()
