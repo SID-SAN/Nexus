@@ -9,12 +9,13 @@ from urllib.parse import quote
 from node.downloader import download_job
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
 from config import RELAY_URLS
-import traceback
+from logger import setup_logger
 
 claim_lock = asyncio.Lock()
 current_relay = None
 MAX_RETRIES = 5
 download_locks = {}
+logger = setup_logger("node-client")
 
 
 def get_node_id():
@@ -56,6 +57,14 @@ STALE_JOB_TTL = 3600
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 
 
+def error_response(message, code="ERROR"):
+    return {
+        "status": "failed",
+        "error": message,
+        "code": code,
+    }
+
+
 def is_valid_job_id(job_id):
     return bool(JOB_ID_RE.fullmatch(str(job_id or "")))
 
@@ -67,7 +76,7 @@ async def enqueue_message(message):
             "retries": 0
         })
     except asyncio.QueueFull:
-        print("[Sender] Queue full, dropping message")
+        logger.warning("[Sender] Queue full, dropping message")
 
 
 def build_job_state(job):
@@ -196,7 +205,8 @@ async def cleanup_job_cache(job_id):
     if job_id in job_cache:
         await broadcast_action("job_cleanup", job_id=job_id)
     job_cache.pop(job_id, None)
-    print(f"[Cache] Cleaned job {job_id}")
+    download_locks.pop(job_id, None)
+    logger.info(f"[Cache] Cleaned job {job_id}")
 
 
 async def request_verification(job_id, chunk, original_result):
@@ -218,8 +228,6 @@ async def request_verification(job_id, chunk, original_result):
             "chunk": chunk
         }
     })
-
-    pending_verifications[key] = fut
     try:
         verify_payload = await asyncio.wait_for(fut, timeout=VERIFY_TIMEOUT)
         verify_status = verify_payload.get("status")
@@ -232,7 +240,7 @@ async def request_verification(job_id, chunk, original_result):
 
 
 async def execute_verify_chunk(job_id, chunk, target_node):
-    print(f"[Verify] Verifying chunk {chunk} for job {job_id}")
+    logger.info(f"[Verify] Verifying chunk {chunk} for job {job_id}")
 
     try:
         if not is_valid_job_id(job_id):
@@ -256,13 +264,12 @@ async def execute_verify_chunk(job_id, chunk, target_node):
             "result": result["result"]
         }
     except Exception as e:
-        print(f"[Verify] Error: {e}")
+        logger.exception("[Verify] Unexpected error")
         response_payload = {
             "job_id": job_id,
             "chunk": chunk,
-            "status": "failed",
             "result": None,
-            "error": str(e)
+            **error_response(str(e), "VERIFY_EXECUTION_ERROR"),
         }
 
     await enqueue_message({
@@ -294,8 +301,7 @@ async def execute_chunk_task(job_id, chunk):
             if not os.path.exists(zip_path) and not os.path.exists(extract_path):
                 await asyncio.to_thread(download_job, job_id)
     except Exception as e:
-        print(f"[Node] Download failed: {e}")
-        traceback.print_exc()
+        logger.exception("[Node] Download failed")
         state["in_progress"].discard(chunk)
         return
 
@@ -309,17 +315,15 @@ async def execute_chunk_task(job_id, chunk):
         )
     except asyncio.TimeoutError:
         exec_output = {
-            "status": "failed",
             "result": None,
             "logs": "",
-            "error": "Chunk execution timed out"
+            **error_response("Chunk execution timed out", "CHUNK_EXECUTION_TIMEOUT"),
         }
     except Exception as e:
         exec_output = {
-            "status": "failed",
             "result": None,
             "logs": "",
-            "error": str(e)
+            **error_response(str(e), "CHUNK_EXECUTION_ERROR"),
         }
     finally:
         active_chunks -= 1
@@ -424,7 +428,7 @@ async def cache_maintenance_loop():
 
         for job_id in to_remove:
             job_cache.pop(job_id, None)
-            print(f"[Cache] Pruned stale job {job_id}")
+            logger.info(f"[Cache] Pruned stale job {job_id}")
 
 
 async def sender_loop():
@@ -441,22 +445,21 @@ async def sender_loop():
                 wrapped["retries"] = retries + 1
                 await send_queue.put(wrapped)
             else:
-                print(f"[Sender] Dropping message after {MAX_RETRIES} retries")
+                logger.error(f"[Sender] Dropping message after {MAX_RETRIES} retries")
 
             continue
 
         try:
             await websocket_connection.send(json.dumps(message))
         except Exception as e:
-            print(f"[Sender] Retry sending: {e}")
-            traceback.print_exc()
+            logger.exception("[Sender] Retry sending failed")
 
             if retries < MAX_RETRIES:
                 wrapped["retries"] = retries + 1
                 await asyncio.sleep(1)
                 await send_queue.put(wrapped)
             else:
-                print(f"[Sender] Dropping failed message after {MAX_RETRIES} retries")
+                logger.error(f"[Sender] Dropping failed message after {MAX_RETRIES} retries")
 
 
 def merge_job_state(local, incoming):
@@ -499,20 +502,20 @@ async def connect_to_relay():
         api_key = get_api_key()
 
         if not api_key:
-            print("[Relay] API_KEY is not set. Waiting...")
+            logger.error("[Relay] API_KEY is not set. Waiting...")
             await asyncio.sleep(2)
             continue
 
         for base_url in RELAY_URLS:
             try:
                 relay_url = get_relay_ws_url(base_url, node_id, api_key)
-                print(f"[Relay] Trying {base_url}")
+                logger.info(f"[Relay] Trying {base_url}")
 
                 async with websockets.connect(relay_url, ping_interval=20, ping_timeout=20) as websocket:
                     websocket_connection = websocket
                     current_relay = base_url
                     os.environ["RELAY_HTTP_URL"] = base_url
-                    print(f"[Relay] Connected to {base_url} as {node_id}")
+                    logger.info(f"[Relay] Connected to {base_url} as {node_id}")
 
                     if not work_loop_started:
                         asyncio.create_task(sender_loop())
@@ -615,8 +618,7 @@ async def connect_to_relay():
                                 if job_id:
                                     job_cache.pop(job_id, None)
             except Exception as e:
-                print(f"[Relay] Failed {base_url}: {e}")
-                traceback.print_exc()
+                logger.exception(f"[Relay] Failed {base_url}")
 
-        print("[Relay] All relays failed. Retrying in 3s...\n")
+        logger.warning("[Relay] All relays failed. Retrying in 3s...")
         await asyncio.sleep(3)

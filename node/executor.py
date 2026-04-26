@@ -6,6 +6,13 @@ from node.docker_runner import run_in_docker
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 BASE_DIR = os.path.abspath("jobs")
 
+def error_response(message, code="ERROR"):
+    return {
+        "status": "failed",
+        "error": message,
+        "code": code,
+    }
+
 
 def safe_job_path(job_id):
     if not JOB_ID_RE.fullmatch(str(job_id)):
@@ -34,27 +41,24 @@ def execute_chunk(job_id, chunk_id, chunk_data=None):
         extract_path = safe_job_path(job_id)
     except ValueError as e:
         return {
-            "status": "failed",
             "result": None,
             "logs": "",
-            "error": str(e),
+            **error_response(str(e), "INVALID_JOB_ID"),
         }
 
     if not os.path.exists(extract_path):
         return {
-            "status": "failed",
             "result": None,
             "logs": "",
-            "error": "job not downloaded",
+            **error_response("job not downloaded", "JOB_NOT_DOWNLOADED"),
         }
 
     task_path = os.path.join(extract_path, "task.py")
     if not os.path.exists(task_path):
         return {
-            "status": "failed",
             "result": None,
             "logs": "",
-            "error": "task.py not found in extracted job package",
+            **error_response("task.py not found in extracted job package", "TASK_NOT_FOUND"),
         }
 
     payload = chunk_data or {}

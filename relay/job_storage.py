@@ -15,6 +15,13 @@ JOB_DIR_ABS = os.path.abspath(JOB_DIR)
 
 os.makedirs(JOB_DIR, exist_ok=True)
 
+def error_response(message, code="ERROR"):
+    return {
+        "status": "failed",
+        "error": message,
+        "code": code
+    }
+
 
 def safe_job_zip_path(job_id: str) -> str:
     if not JOB_ID_RE.fullmatch(job_id or ""):
@@ -46,9 +53,9 @@ def download_job(job_id: str):
     try:
         path = safe_job_zip_path(job_id)
     except ValueError:
-        return {"error": "invalid job id"}
+        return error_response("invalid job id", "INVALID_JOB_ID")
 
     if not os.path.exists(path):
-        return {"error": "job not found"}
+        return error_response("job not found", "JOB_NOT_FOUND")
 
     return FileResponse(path)

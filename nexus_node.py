@@ -4,13 +4,15 @@ import asyncio
 import uuid
 from relay_client import connect_to_relay
 from resource_monitor import resource_monitor_loop
+from logger import setup_logger
 
 
 def start_node(node_id, api_key):
     os.environ["NODE_ID"] = node_id
     os.environ["API_KEY"] = api_key
+    logger = setup_logger(node_id)
 
-    print(f"[CLI] Starting node {node_id}")
+    logger.info(f"[CLI] Starting node {node_id}")
 
     async def runner():
         await asyncio.gather(

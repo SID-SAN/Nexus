@@ -6,18 +6,19 @@ import sys
 
 from relay_client import connect_to_relay
 from resource_monitor import resource_monitor_loop
+from logger import setup_logger
 
 
 def start_node(node_id, api_key):
     os.environ["NODE_ID"] = node_id
     os.environ["API_KEY"] = api_key
-
-    print("\n=====================================")
-    print("        🚀 NEXUS NODE STARTING       ")
-    print("=====================================")
-    print(f"Node ID   : {node_id}")
-    print(f"API Key   : {api_key[:6]}***")
-    print("=====================================\n")
+    logger = setup_logger(node_id)
+    logger.info("=====================================")
+    logger.info("NEXUS NODE STARTING")
+    logger.info("=====================================")
+    logger.info(f"Node ID: {node_id}")
+    logger.info(f"API Key: {api_key[:6]}***")
+    logger.info("=====================================")
 
     async def runner():
         await asyncio.gather(
@@ -28,7 +29,7 @@ def start_node(node_id, api_key):
     try:
         asyncio.run(runner())
     except KeyboardInterrupt:
-        print("\n[CLI] Node stopped manually")
+        logger.info("[CLI] Node stopped manually")
 
 
 def main():

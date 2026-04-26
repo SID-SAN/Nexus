@@ -1,10 +1,18 @@
 import os
 import re
 import subprocess
+import asyncio
 
 IMAGE_NAME = "nexus-base"
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 BASE_JOBS_DIR = os.path.abspath("jobs")
+
+def error_response(message, code="ERROR"):
+    return {
+        "status": "failed",
+        "error": message,
+        "code": code,
+    }
 
 
 def _is_valid_job_id(job_id: str) -> bool:
@@ -75,15 +83,13 @@ def run_in_docker(job_id, args):
 
     except subprocess.TimeoutExpired:
         return {
-            "status": "failed",
             "result": None,
             "logs": "",
-            "error": "Execution timed out"
+            **error_response("Execution timed out", "EXECUTION_TIMEOUT"),
         }
     except Exception as e:
         return {
-            "status": "failed",
             "result": None,
             "logs": "",
-            "error": str(e)
+            **error_response(str(e), "EXECUTION_ERROR"),
         }

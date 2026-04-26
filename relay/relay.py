@@ -11,7 +11,19 @@ import zipfile
 import re
 from relay.job_persistence import load_jobs, save_jobs
 from db import supabase
+import logging
 app = FastAPI()
+
+logger = logging.getLogger("relay")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | relay | %(levelname)s | %(message)s")
+
+def error_response(message, code="ERROR"):
+    return {
+        "status": "failed",
+        "error": message,
+        "code": code
+    }
 # -----------------------------
 # Storage
 # -----------------------------
@@ -60,7 +72,7 @@ def update_user_credits_by_api_key(api_key, new_credits):
         "credits": new_credits
     }).eq("api_key", api_key).execute()
 
-    print("UPDATE RESULT:", res)
+    logger.info(f"UPDATE RESULT: {res}")
 
 
 import bcrypt
@@ -107,7 +119,7 @@ async def safe_send(ws, message, node_id=None):
             await ws.send_text(json.dumps(message))
     except Exception as e:
         if node_id:
-            print(f"[Relay] Removing dead node {node_id}: {e}")
+            logger.warning(f"[Relay] Removing dead node {node_id}: {e}")
             connected_nodes.pop(node_id, None)
             node_resources.pop(node_id, None)
             node_last_seen.pop(node_id, None)
@@ -141,7 +153,7 @@ async def heartbeat_loop():
 
             # 🔥 remove stale nodes
             if now - last_seen > NODE_TIMEOUT:
-                print(f"[Relay] Removing stale node {node_id}")
+                logger.info(f"[Relay] Removing stale node {node_id}")
                 connected_nodes.pop(node_id, None)
                 node_resources.pop(node_id, None)
                 node_last_seen.pop(node_id, None)
@@ -161,7 +173,7 @@ async def broadcast_peer_list():
             continue
 
         last_peer_list = current
-        print(f"[Relay] Broadcasting peers: {current}")
+        logger.info(f"[Relay] Broadcasting peers: {current}")
 
         message = {
             "type": "peer_list",
@@ -203,7 +215,7 @@ async def monitor_jobs():
                         if original:
                             val = parse_result_value(original.get("result"))
 
-                            print(f"[Force Complete] chunk {chunk} after verify timeout")
+                            logger.info(f"[Force Complete] chunk {chunk} after verify timeout")
 
                             job.setdefault("results", {})
                             job["results"][chunk] = val
@@ -222,7 +234,7 @@ async def monitor_jobs():
                     retries = job["retries"].get(chunk, 0)
 
                     if retries < MAX_RETRIES:
-                        print(f"[Retry] chunk {chunk} for job {job_id}")
+                        logger.warning(f"[Retry] chunk {chunk} for job {job_id}")
 
                         job["queue"].append(int(chunk))
                         job["status_map"][chunk] = "pending"
@@ -237,7 +249,7 @@ async def monitor_jobs():
                         job["updated_at"] = time.time()
 
                     else:
-                        print(f"[Failed] chunk {chunk}")
+                        logger.error(f"[Failed] chunk {chunk}")
 
                         job["status_map"][chunk] = "failed"
                         job["errors"][chunk] = "Max retries exceeded"
@@ -246,7 +258,7 @@ async def monitor_jobs():
             # 🔥 convert stuck running -> completed if result exists
             for chunk, status in job["status_map"].items():
                 if status == "running" and chunk in job.get("results", {}):
-                    print(f"[Fix] Converting stuck chunk {chunk} to completed")
+                    logger.info(f"[Fix] Converting stuck chunk {chunk} to completed")
                     job["status_map"][chunk] = "completed"
 
             total = job["chunks"]
@@ -262,7 +274,7 @@ async def monitor_jobs():
             )
 
             if completed + failed == total and job["status"] != "completed":
-                print(f"[FORCE COMPLETE] Job {job_id} completed via monitor")
+                logger.info(f"[FORCE COMPLETE] Job {job_id} completed via monitor")
 
                 job["status"] = "completed"
                 job["final_result"] = compute_final_result(job)
@@ -335,7 +347,7 @@ def apply_reducer(results, reducer):
                 continue
 
     if not values:
-        print("WARNING: No valid numeric values for reducer")
+        logger.warning("No valid numeric values for reducer")
         return None
 
     if reducer == "sum":
@@ -358,7 +370,7 @@ def compute_final_result(job):
     # 🔥 FILL MISSING RESULTS FROM logs OR DEFAULT
     for chunk, status in job.get("status_map", {}).items():
         if status == "completed" and chunk not in results:
-            print(f"[Fix] Missing result for chunk {chunk}, setting fallback")
+            logger.info(f"[Fix] Missing result for chunk {chunk}, setting fallback")
             results[chunk] = None  # or None-safe fallback
 
     valid_values = [
@@ -367,7 +379,7 @@ def compute_final_result(job):
     ]
 
     if not valid_values:
-        print("❌ No valid results — marking job failed")
+        logger.error("No valid results, marking job failed")
         job["status"] = "failed"
         job["final_result"] = None
         return None
@@ -379,13 +391,13 @@ def extract_config(zip_path):
         with zipfile.ZipFile(zip_path, "r") as z:
             names = set(z.namelist())
             if "task.py" not in names:
-                return {"error": "task.py is required in the root of the ZIP"}
+                return error_response("task.py is required in the root of the ZIP", "ERROR")
             if "config.json" in names:
                 return json.loads(z.read("config.json"))
     except zipfile.BadZipFile:
-        return {"error": "invalid zip file"}
+        return error_response("invalid zip file", "ERROR")
     except Exception as e:
-        return {"error": f"failed to parse job package: {e}"}
+        return error_response(f"failed to parse job package: {e}", "ERROR")
     return None
 
 
@@ -417,13 +429,13 @@ def build_chunks_data(config, fallback_chunks):
         end = int(config.get("end", 0))
         size = int(config.get("chunk_size", 0))
         if size <= 0 or end <= start:
-            return {"error": "invalid range config"}
+            return error_response("invalid range config", "ERROR")
         return create_range_chunks(start, end, size)
 
     if chunk_type == "file_list":
         files = config.get("files")
         if not isinstance(files, list) or not files:
-            return {"error": "invalid file_list config"}
+            return error_response("invalid file_list config", "ERROR")
         return create_file_chunks(files)
 
     return [{"id": i} for i in range(1, fallback_chunks + 1)]
@@ -486,7 +498,7 @@ async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
     ]
 
     if not candidate_nodes:
-        print(f"[Verify] No eligible peer for chunk {chunk_key} in job {job_id}")
+        logger.warning(f"[Verify] No eligible peer for chunk {chunk_key} in job {job_id}")
         return
 
     target_node = random.choice(candidate_nodes)
@@ -503,7 +515,7 @@ async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
     }, target_node)
 
     verify_requests[chunk_key] = target_node
-    print(f"[Verify] Forwarded chunk {chunk_key} for job {job_id} to {target_node}")
+    logger.info(f"[Verify] Forwarded chunk {chunk_key} for job {job_id} to {target_node}")
 
 
 async def broadcast_job_manifest(job_id, job):
@@ -578,7 +590,7 @@ def download_job(job_id: str):
     try:
         path = safe_job_zip_path(job_id)
     except ValueError:
-        return {"error": "invalid job id"}
+        return error_response("invalid job id", "ERROR")
 
     return FileResponse(path) if os.path.exists(path) else {"error": "not found"}
 
@@ -598,15 +610,15 @@ async def submit_job(
     
     try:
         user = get_user_by_api_key(api_key)
-    except Exception as e:
-        print("❌ Supabase error:", e)
-        return {"error": "internal server error"}
+    except Exception:
+        logger.exception("Supabase error during submit_job")
+        return error_response("internal server error", "INTERNAL_SERVER_ERROR")
     
     if not user:
-        return {"error": "invalid api key"}
+        return error_response("invalid api key", "ERROR")
 
     if user["credits"] < price:
-        return {"error": "insufficient credits"}
+        return error_response("insufficient credits", "ERROR")
 
     if not chunks or chunks <= 0:
         chunks = auto_calculate_chunks()
@@ -618,16 +630,16 @@ async def submit_job(
         f.write(await file.read())
 
     config = extract_config(path)
-    if isinstance(config, dict) and config.get("error"):
-        return {"error": config["error"]}
+    if isinstance(config, dict) and config.get("status") == "failed":
+        return config
 
     chunks_data = build_chunks_data(config, chunks)
-    if isinstance(chunks_data, dict) and chunks_data.get("error"):
-        return {"error": chunks_data["error"]}
+    if isinstance(chunks_data, dict) and chunks_data.get("status") == "failed":
+        return chunks_data
 
     total_chunks = len(chunks_data)
     if total_chunks <= 0:
-        return {"error": "no chunks generated from config"}
+        return error_response("no chunks generated from config", "ERROR")
 
     new_credits = user["credits"] - price
     update_user_credits_by_api_key(user["api_key"], new_credits)
@@ -674,7 +686,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     user = get_user_by_api_key(api_key)
 
     if not user:
-        print("❌ INVALID API KEY")
+        logger.error("Invalid API KEY")
         await websocket.close(code=1008)
         return
 
@@ -683,13 +695,13 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     user_id = user["user_id"]
     node_owner_map[node_id] = user_id
     
-    print(f"[Auth] Node {node_id} linked to user {user_id}")
+    logger.info(f"[Auth] Node {node_id} linked to user {user_id}")
     
     # continue normal flow
     connected_nodes[node_id] = websocket
     node_last_seen[node_id] = time.time()
 
-    print(f"Node connected: {node_id}")
+    logger.info(f"Node connected: {node_id}")
     for jid, job in jobs.items():
         if job.get("status") != "running":
             continue
@@ -742,8 +754,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             elif msg_type == "submit_result":
 
-                print("RESULT RECEIVED FROM:", node_id)
-                print("FULL MESSAGE:", message)
+                logger.info(f"RESULT RECEIVED FROM: {node_id}")
+                logger.info(f"FULL MESSAGE: {message}")
                 payload = message["payload"]
                 job_id = payload["job_id"]
                 chunk = str(payload["chunk"])
@@ -783,7 +795,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     failed_nodes = failed_node_set
 
                     if failed_nodes.issuperset(available_nodes) and available_nodes:
-                        print(f"[All nodes failed chunk {chunk}]")
+                        logger.error(f"[All nodes failed chunk {chunk}]")
 
                         job["status_map"][chunk_key] = "failed"
                         job["errors"][chunk_key] = "All nodes failed execution"
@@ -794,7 +806,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         retries = job["retries"].get(chunk_key, 0)
 
                         if retries < MAX_RETRIES:
-                            print(f"[Retry Triggered] chunk {chunk} for job {job_id}")
+                            logger.warning(f"[Retry Triggered] chunk {chunk} for job {job_id}")
 
                             if int(chunk) not in job["queue"]:
                                 job["queue"].append(int(chunk))
@@ -803,7 +815,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                             job["errors"][chunk_key] = payload.get("error", "Execution failed")
 
                         else:
-                            print(f"[Permanent Failure] chunk {chunk}")
+                            logger.error(f"[Permanent Failure] chunk {chunk}")
 
                             job["status_map"][chunk_key] = "failed"
                             job["errors"][chunk_key] = "Max retries exceeded"
@@ -816,7 +828,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job.get("verification_originals", {}).pop(chunk_key, None)
                     job.get("verify_started_at", {}).pop(chunk_key, None)
                     job["updated_at"] = time.time()
-                    print("Retries:", job["retries"])
+                    logger.info(f"Retries: {job['retries']}")
 
                     total = job["chunks"]
 
@@ -846,7 +858,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 raw_result = payload.get("result")
                 val = parse_result_value(raw_result)
                 if val is None:
-                    print(f"[Parse Warning] Chunk {chunk_key} produced invalid result: {raw_result}")
+                    logger.warning(f"[Parse Warning] Chunk {chunk_key} produced invalid result: {raw_result}")
 
                 verification_map = job.setdefault("verifications", {})
                 chunk_verify = verification_map.setdefault(chunk_key, {})
@@ -858,7 +870,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 chunk_verify[node_id] = val
                 if len(connected_nodes) <= 1:
-                    print(f"[Auto Complete] Only one node, skipping verification for chunk {chunk_key}")
+                    logger.info(f"[Auto Complete] Only one node, skipping verification for chunk {chunk_key}")
 
                     job.setdefault("results", {})
                     job["results"][chunk_key] = val
@@ -903,12 +915,12 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 originals = job.get("verification_originals", {})
                 original = originals.get(chunk_key)
                 if not original:
-                    print(f"[Verify] Missing original result for chunk {chunk_key} in job {job_id}")
+                    logger.warning(f"[Verify] Missing original result for chunk {chunk_key} in job {job_id}")
                     continue
 
                 original_source = original.get("source")
                 if node_id == original_source:
-                    print(f"[Verify] Ignoring self-verification for chunk {chunk_key}")
+                    logger.warning(f"[Verify] Ignoring self-verification for chunk {chunk_key}")
                     continue
 
                 original_result = original.get("result")
@@ -917,9 +929,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 verify_val = parse_result_value(verify_result)
 
                 if original_val == verify_val:
-                    print(f"[Verify] Chunk {chunk_key} verified by {node_id} against {original_source} ✅")
+                    logger.info(f"[Verify] Chunk {chunk_key} verified by {node_id} against {original_source} ✅")
                 else:
-                    print(f"[Verify] Chunk {chunk_key} mismatch ❌")
+                    logger.warning(f"[Verify] Chunk {chunk_key} mismatch")
 
                 verification_map = job.get("verifications", {})
                 chunk_verify = verification_map.get(chunk_key)
@@ -935,7 +947,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job.setdefault("results", {})
                     final_val = original_val if original_val is not None else verify_val
                     job["results"][chunk_key] = final_val
-                    print(f"[DEBUG] STORED RESULT → chunk {chunk_key}: {final_val}")
+                    logger.info(f"[DEBUG] STORED RESULT → chunk {chunk_key}: {final_val}")
 
                     job["status_map"][chunk_key] = "completed"
                     job.get("retry_count", {}).pop(chunk_key, None)
@@ -975,10 +987,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                                         new_credits = user["credits"] + reward_per_node
                                         update_user_credits_by_api_key(api_key, new_credits)
 
-                                print(f"[Reward] {reward_per_node} -> node {node}")
+                                logger.info(f"[Reward] {reward_per_node} -> node {node}")
 
-                            except Exception as e:
-                                print("❌ Reward update failed:", e)
+                            except Exception:
+                                logger.exception("Reward update failed")
                         rewarded_chunks.add(chunk_key)
 
                     for node in chunk_verify.keys():
@@ -1005,7 +1017,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     retry_map[chunk_key] = retry_map.get(chunk_key, 0) + 1
 
                     if retry_map[chunk_key] > MAX_RETRIES:
-                        print(f"[Verify] Chunk {chunk_key} failed permanently ❌")
+                        logger.error(f"[Verify] Chunk {chunk_key} failed permanently")
                         job["status_map"][chunk_key] = "failed"
                         while int(chunk_key) in job["queue"]:
                             job["queue"].remove(int(chunk_key))
@@ -1052,7 +1064,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
 
     except WebSocketDisconnect:
-        print(f"Node disconnected: {node_id}")
+        logger.info(f"Node disconnected: {node_id}")
         connected_nodes.pop(node_id, None)
         node_resources.pop(node_id, None)
         node_last_seen.pop(node_id, None)
@@ -1065,7 +1077,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 def job_status(job_id: str):
     job = jobs.get(job_id)
     if not job:
-        return {"error": "not found"}
+        return error_response("not found", "ERROR")
 
     completed = get_completed_count(job)
 
@@ -1080,11 +1092,11 @@ def job_status(job_id: str):
 def job_result(job_id: str, api_key: str):
     user = get_user_by_api_key(api_key)
     if not user:
-        return {"error": "invalid api key"}
+        return error_response("invalid api key", "ERROR")
 
     job = jobs.get(job_id)
     if not job or job.get("owner") != user["user_id"]:
-        return {"error": "unauthorized"}
+        return error_response("unauthorized", "ERROR")
 
     if job["status"] != "completed":
         return {"status": "running"}
@@ -1100,7 +1112,7 @@ def job_result(job_id: str, api_key: str):
 def all_jobs(api_key: str):
     user = get_user_by_api_key(api_key)
     if not user:
-        return {"error": "invalid api key"}
+        return error_response("invalid api key", "ERROR")
 
     user_id = user["user_id"]
     out = {}
@@ -1146,14 +1158,14 @@ def all_jobs(api_key: str):
 def cancel_job(job_id: str, api_key: str):
     user = get_user_by_api_key(api_key)
     if not user:
-        return {"error": "invalid api key"}
+        return error_response("invalid api key", "ERROR")
 
     job = jobs.get(job_id)
 
     if not job:
-        return {"error": "not found"}
+        return error_response("not found", "ERROR")
     if job.get("owner") != user["user_id"]:
-        return {"error": "unauthorized"}
+        return error_response("unauthorized", "ERROR")
 
     if job["status"] != "running":
         return {"status": job["status"]}
@@ -1179,8 +1191,8 @@ def cancel_job(job_id: str, api_key: str):
 
                 update_user_credits_by_api_key(api_key, new_credits)
 
-        except Exception as e:
-            print("Refund failed:", e)
+        except Exception:
+            logger.exception("Refund failed")
 
     job["queue"] = []
 
@@ -1198,12 +1210,12 @@ def cancel_job(job_id: str, api_key: str):
 def job_logs(job_id: str, api_key: str):
     user = get_user_by_api_key(api_key)
     if not user:
-        return {"error": "invalid api key"}
+        return error_response("invalid api key", "ERROR")
 
     job = jobs.get(job_id)
 
     if not job or job.get("owner") != user["user_id"]:
-        return {"error": "unauthorized"}
+        return error_response("unauthorized", "ERROR")
 
     return {
         "job_id": job_id,
@@ -1241,7 +1253,7 @@ def get_user(api_key: str):
     user = get_user_by_api_key(api_key)
 
     if not user:
-        return {"error": "not found"}
+        return error_response("not found", "ERROR")
 
     return user
 
@@ -1255,12 +1267,12 @@ def login(email: str = Form(...), password: str = Form(...)):
         .execute()
 
     if not res.data:
-        return {"error": "invalid credentials"}
+        return error_response("invalid credentials", "ERROR")
 
     user = res.data[0]
 
     if not verify_password(password, user["password"]):
-        return {"error": "invalid credentials"}
+        return error_response("invalid credentials", "ERROR")
 
     if not user["password"].startswith("$2b$"):
         new_hash = hash_password(password)
@@ -1269,7 +1281,7 @@ def login(email: str = Form(...), password: str = Form(...)):
             .eq("user_id", user["user_id"])\
             .execute()
 
-        print(f"[Auth] Upgraded user {user['user_id']} to bcrypt")
+        logger.info(f"[Auth] Upgraded user {user['user_id']} to bcrypt")
 
     return {
         "api_key": user["api_key"],
@@ -1286,6 +1298,8 @@ def dashboard():
     file_path = os.path.join(BASE_DIR, "frontend", "dashboard.html")
 
     if not os.path.exists(file_path):
-        return {"error": f"File not found: {file_path}"}
+        return error_response(f"File not found: {file_path}", "ERROR")
 
     return FileResponse(file_path)
+
+

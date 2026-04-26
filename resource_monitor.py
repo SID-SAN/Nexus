@@ -3,10 +3,13 @@ import json
 import os
 import psutil
 import relay_client
+from logger import setup_logger
 
 
 def get_node_id():
     return os.getenv("NODE_ID", "node_default")
+
+logger = setup_logger("resource-monitor")
 
 
 async def resource_monitor_loop():
@@ -21,12 +24,12 @@ async def resource_monitor_loop():
             cpu_usage = psutil.cpu_percent(interval=0.1)
             ram_usage = psutil.virtual_memory().percent
 
-            print(f"[Resource] CPU: {cpu_usage}% | RAM: {ram_usage}%")
+            logger.info(f"[Resource] CPU: {cpu_usage}% | RAM: {ram_usage}%")
 
             ws = relay_client.websocket_connection
 
             if ws is None:
-                print("[Resource] No active connection, waiting...")
+                logger.warning("[Resource] No active connection, waiting...")
                 await asyncio.sleep(5)
                 continue
 
@@ -41,14 +44,14 @@ async def resource_monitor_loop():
 
             try:
                 await ws.send(json.dumps(message))
-                print("[Resource] Sent update to relay")
+                logger.info("[Resource] Sent update to relay")
 
             except Exception as e:
                 # connection probably dropped
-                print(f"[Resource] Failed to send update: {e}")
+                logger.warning(f"[Resource] Failed to send update: {e}")
                 relay_client.websocket_connection = None
 
-        except Exception as e:
-            print(f"[Resource] Monitor error: {e}")
+        except Exception:
+            logger.exception("[Resource] Monitor error")
 
         await asyncio.sleep(5)
