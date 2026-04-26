@@ -224,6 +224,21 @@ async function createUser() {
     "New API Key: " + data.api_key;
 }
 
+async function fetchCredits() {
+  const apiKey = localStorage.getItem("api_key");
+  if (!apiKey) return;
+
+  try {
+    const res = await fetch("/user/" + apiKey);
+    const data = await res.json();
+
+    document.getElementById("credits").innerText =
+      data.credits ?? 0;
+  } catch (e) {
+    console.error("Fetch credits error:", e);
+  }
+}
+
 // 🖥️ NODES
 function updateNodes(nodes) {
 
@@ -513,6 +528,7 @@ async function pollDashboard() {
     updateNodes(nodes);
     updateJobs(jobs);
     updateStats(nodes, jobs);
+    await fetchCredits();
 
   } catch (err) {
     console.error("Polling error:", err);
