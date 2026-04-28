@@ -1,11 +1,18 @@
 import os
 import re
 import subprocess
-import asyncio
 
 IMAGE_NAME = "nexus-base"
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 BASE_JOBS_DIR = os.path.abspath("jobs")
+
+# Resource limits
+DOCKER_CPU_LIMIT = "0.5"
+DOCKER_MEMORY_LIMIT = "512m"
+
+# Timeouts
+DOCKER_EXEC_TIMEOUT = 60
+DEPENDENCY_INSTALL_TIMEOUT = 180
 
 def error_response(message, code="ERROR"):
     return {
@@ -43,7 +50,7 @@ def _ensure_deps_installed(extract_path):
         "sh", "-lc",
         "if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi; touch .deps_installed",
     ]
-    subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=False)
+    subprocess.run(cmd, capture_output=True, text=True, timeout=DEPENDENCY_INSTALL_TIMEOUT, check=False)
 
 
 def run_in_docker(job_id, args):
@@ -54,8 +61,8 @@ def run_in_docker(job_id, args):
         "docker", "run",
         "--rm",
         "--network", "none",
-        "--cpus=0.5",
-        "--memory=512m",
+        f"--cpus={DOCKER_CPU_LIMIT}",
+        f"--memory={DOCKER_MEMORY_LIMIT}",
         "-v", f"{extract_path}:/app",
         "-w", "/app",
         IMAGE_NAME,
@@ -68,7 +75,7 @@ def run_in_docker(job_id, args):
             cmd,
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=DOCKER_EXEC_TIMEOUT
         )
 
         output = result.stdout.strip().splitlines()        

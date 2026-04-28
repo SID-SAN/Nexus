@@ -7,8 +7,6 @@ NODE_ID = os.getenv("NODE_ID", "node_default")
 HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", 5001))
 
-# Bootstrap server (local or deployed)
-BOOTSTRAP_URL = os.getenv("BOOTSTRAP_URL", "http://127.0.0.1:8000")
 RELAY_URLS = ["https://nexus-relay-5wog.onrender.com"]
 
 # Request timeout

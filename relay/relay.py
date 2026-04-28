@@ -236,9 +236,9 @@ async def monitor_jobs():
                     if retries < MAX_RETRIES:
                         logger.warning(f"[Retry] chunk {chunk} for job {job_id}")
 
-                        job["queue"].append(int(chunk))
+                        job["queue"].append(chunk)
                         job["status_map"][chunk] = "pending"
-                        job["retries"][chunk] += 1
+                        job["retries"][chunk] = retries + 1
 
                         job.get("verifications", {}).pop(chunk, None)
                         job.get("verify_requests", {}).pop(chunk, None)
@@ -406,7 +406,7 @@ def create_range_chunks(start, end, size):
     chunk_id = 1
     for i in range(start, end, size):
         chunks.append({
-            "id": chunk_id,
+            "id": str(chunk_id),
             "start": i,
             "end": min(i + size, end)
         })
@@ -415,12 +415,12 @@ def create_range_chunks(start, end, size):
 
 
 def create_file_chunks(files):
-    return [{"id": i + 1, "file": f} for i, f in enumerate(files)]
+    return [{"id": str(i + 1), "file": f} for i, f in enumerate(files)]
 
 
 def build_chunks_data(config, fallback_chunks):
     if not config or not isinstance(config, dict):
-        return [{"id": i} for i in range(1, fallback_chunks + 1)]
+        return [{"id": str(i)} for i in range(1, fallback_chunks + 1)]
 
     chunk_type = config.get("chunk_type")
 
@@ -438,7 +438,7 @@ def build_chunks_data(config, fallback_chunks):
             return error_response("invalid file_list config", "ERROR")
         return create_file_chunks(files)
 
-    return [{"id": i} for i in range(1, fallback_chunks + 1)]
+    return [{"id": str(i)} for i in range(1, fallback_chunks + 1)]
 
 
 def parse_result_value(raw_result):
@@ -649,7 +649,7 @@ async def submit_job(
         "chunks": total_chunks,
         "total_chunks": total_chunks,
         "chunks_data": chunks_data,
-        "queue": [c["id"] for c in chunks_data],
+        "queue": [str(c["id"]) for c in chunks_data],
         "results": {},
         "completed_chunks": set(),
         "verifications": {},
@@ -758,8 +758,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 logger.info(f"FULL MESSAGE: {message}")
                 payload = message["payload"]
                 job_id = payload["job_id"]
-                chunk = str(payload["chunk"])
-                chunk_key = str(chunk)
+                chunk_key = str(payload["chunk"])
                 status = payload.get("status", "success")
 
                 job = jobs.get(job_id)
@@ -795,32 +794,32 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     failed_nodes = failed_node_set
 
                     if failed_nodes.issuperset(available_nodes) and available_nodes:
-                        logger.error(f"[All nodes failed chunk {chunk}]")
+                        logger.error(f"[All nodes failed chunk {chunk_key}]")
 
                         job["status_map"][chunk_key] = "failed"
                         job["errors"][chunk_key] = "All nodes failed execution"
 
-                        while int(chunk) in job["queue"]:
-                            job["queue"].remove(int(chunk))
+                        while chunk_key in job["queue"]:
+                            job["queue"].remove(chunk_key)
                     else:
                         retries = job["retries"].get(chunk_key, 0)
 
                         if retries < MAX_RETRIES:
-                            logger.warning(f"[Retry Triggered] chunk {chunk} for job {job_id}")
+                            logger.warning(f"[Retry Triggered] chunk {chunk_key} for job {job_id}")
 
-                            if int(chunk) not in job["queue"]:
-                                job["queue"].append(int(chunk))
+                            if chunk_key not in job["queue"]:
+                                job["queue"].append(chunk_key)
                             job["status_map"][chunk_key] = "pending"
                             job["retries"][chunk_key] = retries + 1
                             job["errors"][chunk_key] = payload.get("error", "Execution failed")
 
                         else:
-                            logger.error(f"[Permanent Failure] chunk {chunk}")
+                            logger.error(f"[Permanent Failure] chunk {chunk_key}")
 
                             job["status_map"][chunk_key] = "failed"
                             job["errors"][chunk_key] = "Max retries exceeded"
-                            while int(chunk) in job["queue"]:
-                                job["queue"].remove(int(chunk))
+                            while chunk_key in job["queue"]:
+                                job["queue"].remove(chunk_key)
 
                     job["logs"].setdefault(chunk_key, "")
                     job["logs"][chunk_key] += payload.get("logs") or ""
@@ -1019,8 +1018,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if retry_map[chunk_key] > MAX_RETRIES:
                         logger.error(f"[Verify] Chunk {chunk_key} failed permanently")
                         job["status_map"][chunk_key] = "failed"
-                        while int(chunk_key) in job["queue"]:
-                            job["queue"].remove(int(chunk_key))
+                        while chunk_key in job["queue"]:
+                            job["queue"].remove(chunk_key)
                         job.get("verifications", {}).pop(chunk_key, None)
                         job.get("verify_requests", {}).pop(chunk_key, None)
                         job.get("verification_originals", {}).pop(chunk_key, None)
@@ -1032,8 +1031,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job.get("verification_originals", {}).pop(chunk_key, None)
                         job.get("verify_started_at", {}).pop(chunk_key, None)
 
-                        if retry_map[chunk_key] <= MAX_RETRIES and int(chunk_key) not in job["queue"]:
-                            job["queue"].append(int(chunk_key))
+                        if retry_map[chunk_key] <= MAX_RETRIES and chunk_key not in job["queue"]:
+                            job["queue"].append(chunk_key)
 
                         job["status_map"][chunk_key] = "pending"
 
