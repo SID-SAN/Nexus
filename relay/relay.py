@@ -12,6 +12,7 @@ import re
 from relay.job_persistence import load_jobs, save_jobs
 from db import supabase
 import logging
+import bcrypt
 app = FastAPI()
 
 logger = logging.getLogger("relay")
@@ -48,7 +49,7 @@ last_peer_list = set()
 MAX_RETRIES = 3
 CHUNK_TIMEOUT = 60
 NODE_TIMEOUT = 60
-VERIFY_TIMEOUT = 45
+VERIFY_TIMEOUT = 5
 
 
 # -----------------------------
@@ -75,7 +76,25 @@ def update_user_credits_by_api_key(api_key, new_credits):
     logger.info(f"UPDATE RESULT: {res}")
 
 
-import bcrypt
+def adjust_user_credits_by_api_key(api_key, amount):
+    api_key = api_key.strip()
+    try:
+        res = supabase.rpc("increment_credits", {
+            "user_api_key": api_key,
+            "amount": amount
+        }).execute()
+
+        # 🔥 STRICT VALIDATION
+        if not res or getattr(res, "data", None) is None:
+            logger.error(f"RPC returned no data for {api_key}")
+            return False
+
+        return True
+
+    except Exception:
+        logger.exception("increment_credits RPC failed")
+        return False
+
 
 def hash_password(password: str):
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -641,8 +660,13 @@ async def submit_job(
     if total_chunks <= 0:
         return error_response("no chunks generated from config", "ERROR")
 
-    new_credits = user["credits"] - price
-    update_user_credits_by_api_key(user["api_key"], new_credits)
+    if not adjust_user_credits_by_api_key(user["api_key"], -price):
+        async with credit_update_lock:
+            user = get_user_by_api_key(user["api_key"])
+            if not user or user["credits"] < price:
+                return error_response("insufficient credits", "ERROR")
+            new_credits = user["credits"] - price
+            update_user_credits_by_api_key(user["api_key"], new_credits)
 
     jobs[job_id] = {
         "name": job_name,
@@ -972,19 +996,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                                 api_key = user["api_key"].strip()
 
-                                try:
-                                    supabase.rpc("increment_credits", {
-                                        "user_api_key": api_key,
-                                        "amount": reward_per_node
-                                    }).execute()
-                                except Exception:
-                                    async with credit_update_lock:
-                                        user = get_user_by_id(user_id)
-                                        if not user:
-                                            continue
-                                        api_key = user["api_key"].strip()
-                                        new_credits = user["credits"] + reward_per_node
-                                        update_user_credits_by_api_key(api_key, new_credits)
+                                success = adjust_user_credits_by_api_key(api_key, reward_per_node)
+                                if not success:
+                                    logger.error(f"[CRITICAL] Credit update failed for {api_key}")
 
                                 logger.info(f"[Reward] {reward_per_node} -> node {node}")
 
@@ -1154,7 +1168,7 @@ def all_jobs(api_key: str):
 
 
 @app.post("/cancel_job/{job_id}")
-def cancel_job(job_id: str, api_key: str):
+async def cancel_job(job_id: str, api_key: str):
     user = get_user_by_api_key(api_key)
     if not user:
         return error_response("invalid api key", "ERROR")
@@ -1186,9 +1200,13 @@ def cancel_job(job_id: str, api_key: str):
             user = get_user_by_id(user_id)
             if user:
                 api_key = user["api_key"].strip()
-                new_credits = user["credits"] + refund
-
-                update_user_credits_by_api_key(api_key, new_credits)
+                if not adjust_user_credits_by_api_key(api_key, refund):
+                    async with credit_update_lock:
+                        user = get_user_by_id(user_id)
+                        if not user:
+                            return {"status": "cancelled", "refund": refund}
+                        new_credits = user["credits"] + refund
+                        update_user_credits_by_api_key(api_key, new_credits)
 
         except Exception:
             logger.exception("Refund failed")
