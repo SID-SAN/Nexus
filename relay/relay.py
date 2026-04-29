@@ -5,7 +5,6 @@ import os
 import uuid
 import asyncio
 import time
-import hashlib
 import random
 import zipfile
 import re
@@ -255,7 +254,10 @@ async def monitor_jobs():
                     if retries < MAX_RETRIES:
                         logger.warning(f"[Retry] chunk {chunk} for job {job_id}")
 
-                        job["queue"].append(chunk)
+                        async with job["_queue_lock"]:
+                            if chunk not in job["queue"]:
+                                job["queue"].append(chunk)
+
                         job["status_map"][chunk] = "pending"
                         job["retries"][chunk] = retries + 1
 
@@ -674,6 +676,7 @@ async def submit_job(
         "total_chunks": total_chunks,
         "chunks_data": chunks_data,
         "queue": [str(c["id"]) for c in chunks_data],
+        "_queue_lock": asyncio.Lock(),
         "results": {},
         "completed_chunks": set(),
         "verifications": {},
@@ -823,16 +826,18 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job["status_map"][chunk_key] = "failed"
                         job["errors"][chunk_key] = "All nodes failed execution"
 
-                        while chunk_key in job["queue"]:
-                            job["queue"].remove(chunk_key)
+                        async with job["_queue_lock"]:
+                            job["queue"] = [c for c in job["queue"] if c != chunk_key]
                     else:
                         retries = job["retries"].get(chunk_key, 0)
 
                         if retries < MAX_RETRIES:
                             logger.warning(f"[Retry Triggered] chunk {chunk_key} for job {job_id}")
 
-                            if chunk_key not in job["queue"]:
-                                job["queue"].append(chunk_key)
+                            async with job["_queue_lock"]:
+                                if chunk_key not in job["queue"]:
+                                    job["queue"].append(chunk_key)
+
                             job["status_map"][chunk_key] = "pending"
                             job["retries"][chunk_key] = retries + 1
                             job["errors"][chunk_key] = payload.get("error", "Execution failed")
@@ -842,8 +847,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                             job["status_map"][chunk_key] = "failed"
                             job["errors"][chunk_key] = "Max retries exceeded"
-                            while chunk_key in job["queue"]:
-                                job["queue"].remove(chunk_key)
+                            async with job["_queue_lock"]:
+                                job["queue"] = [c for c in job["queue"] if c != chunk_key]
 
                     job["logs"].setdefault(chunk_key, "")
                     job["logs"][chunk_key] += payload.get("logs") or ""
@@ -1032,8 +1037,8 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if retry_map[chunk_key] > MAX_RETRIES:
                         logger.error(f"[Verify] Chunk {chunk_key} failed permanently")
                         job["status_map"][chunk_key] = "failed"
-                        while chunk_key in job["queue"]:
-                            job["queue"].remove(chunk_key)
+                        async with job["_queue_lock"]:
+                            job["queue"] = [c for c in job["queue"] if c != chunk_key]
                         job.get("verifications", {}).pop(chunk_key, None)
                         job.get("verify_requests", {}).pop(chunk_key, None)
                         job.get("verification_originals", {}).pop(chunk_key, None)
@@ -1045,8 +1050,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job.get("verification_originals", {}).pop(chunk_key, None)
                         job.get("verify_started_at", {}).pop(chunk_key, None)
 
-                        if retry_map[chunk_key] <= MAX_RETRIES and chunk_key not in job["queue"]:
-                            job["queue"].append(chunk_key)
+                        async with job["_queue_lock"]:
+                            if retry_map[chunk_key] <= MAX_RETRIES and chunk_key not in job["queue"]:
+                                job["queue"].append(chunk_key)
 
                         job["status_map"][chunk_key] = "pending"
 
@@ -1211,7 +1217,8 @@ async def cancel_job(job_id: str, api_key: str):
         except Exception:
             logger.exception("Refund failed")
 
-    job["queue"] = []
+    async with job["_queue_lock"]:
+        job["queue"].clear()
 
     for chunk, status in job["status_map"].items():
         if status == "running" and chunk not in job.get("verify_requests", {}):
@@ -1244,9 +1251,6 @@ def job_logs(job_id: str, api_key: str):
 
 @app.post("/create_user")
 def create_user(email: str = Form(...), password: str = Form(...)):
-
-    import uuid
-
     user_id = f"user_{uuid.uuid4().hex[:6]}"
     api_key = f"key_{uuid.uuid4().hex}"
 

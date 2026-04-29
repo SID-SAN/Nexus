@@ -298,8 +298,11 @@ async def execute_chunk_task(job_id, chunk):
         extract_path = os.path.join(jobs_base, str(job_id))
         lock = get_download_lock(job_id)
         async with lock:
-            if not os.path.exists(zip_path) and not os.path.exists(extract_path):
-                await asyncio.to_thread(download_job, job_id)
+            if not os.path.exists(extract_path):
+                try:
+                    await asyncio.to_thread(download_job, job_id)
+                except FileExistsError:
+                    pass
     except Exception as e:
         logger.exception("[Node] Download failed")
         state["in_progress"].discard(chunk)
