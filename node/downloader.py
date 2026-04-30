@@ -4,6 +4,7 @@ import requests
 import zipfile
 import os
 import re
+import shutil
 from config import RELAY_URLS
 
 JOB_DIR = "jobs"
@@ -26,12 +27,26 @@ def safe_job_path(job_id):
 
     return path
 
+
 def safe_extract(zip_ref, path):
+    tmp_path = f"{path}_tmp"
+
     for member in zip_ref.namelist():
-        member_path = os.path.abspath(os.path.join(path, member))
-        if os.path.commonpath([path, member_path]) != path:
+        member_path = os.path.abspath(os.path.join(tmp_path, member))
+        if os.path.commonpath([tmp_path, member_path]) != tmp_path:
             raise Exception("Zip path traversal detected")
-    zip_ref.extractall(path)
+
+    if os.path.exists(tmp_path):
+        shutil.rmtree(tmp_path)
+
+    os.makedirs(tmp_path, exist_ok=True)
+
+    zip_ref.extractall(tmp_path)
+
+    if os.path.exists(path):
+        shutil.rmtree(path)
+
+    shutil.move(tmp_path, path)
 
 def download_job(job_id):
     if not JOB_ID_RE.fullmatch(str(job_id)):
@@ -39,8 +54,6 @@ def download_job(job_id):
 
     zip_path = os.path.join(BASE_DIR, f"{job_id}.zip")
     extract_path = safe_job_path(job_id)
-    os.makedirs(extract_path, exist_ok=True)
-
 
     url = f"{get_active_relay()}/jobs/{job_id}"
     try:
