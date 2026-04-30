@@ -1,7 +1,10 @@
 import os
 import re
 import shutil
+import time
 from node.docker_runner import run_in_docker
+from logger import setup_logger
+logger = setup_logger()
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 BASE_DIR = os.path.abspath("jobs")
@@ -24,16 +27,25 @@ def safe_job_path(job_id):
 
     return path
 
-
 def cleanup_job(job_id):
     job_dir = safe_job_path(job_id)
     zip_path = os.path.join(BASE_DIR, f"{job_id}.zip")
 
-    shutil.rmtree(job_dir, ignore_errors=True)
     try:
-        os.remove(zip_path)
-    except FileNotFoundError:
-        pass
+        shutil.rmtree(job_dir)
+    except Exception as e:
+        logger.warning(f"Could not delete job dir {job_dir}: {e}")
+
+
+    if os.path.exists(zip_path):
+        for _ in range(5):
+            try:
+                os.remove(zip_path)
+                break
+            except PermissionError:
+                time.sleep(0.2)
+        else:
+            logger.warning(f"Could not delete zip: {zip_path}")
 
 
 def execute_chunk(job_id, chunk_id, chunk_data=None):
