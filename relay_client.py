@@ -108,7 +108,7 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
         state["total_chunks"] = max(state.get("total_chunks", 0), total_chunks)
 
     if state.get("total_chunks", 0) > 0 and not state["chunks"]:
-        state["chunks"] = set(range(1, state["total_chunks"] + 1))
+        state["chunks"] = {str(i) for i in range(1, state["total_chunks"] + 1)}
 
     if chunk_data_map and isinstance(chunk_data_map, dict):
         state["chunk_data_map"].update(chunk_data_map)
@@ -123,7 +123,7 @@ def pick_next_chunk():
 
         available = job["chunks"] - job["in_progress"] - job["completed"]
         if available:
-            return job_id, random.choice(list(available))
+            return job_id, str(random.choice(list(available)))
 
     return None, None
 
@@ -225,7 +225,7 @@ async def request_verification(job_id, chunk, original_result):
             "target": peer,
             "action": "verify_chunk",
             "job_id": job_id,
-            "chunk": chunk
+            "chunk": str(chunk)
         }
     })
     try:
@@ -233,8 +233,10 @@ async def request_verification(job_id, chunk, original_result):
         verify_status = verify_payload.get("status")
         verify_result = verify_payload.get("result")
         return verify_status == "success" and str(verify_result).strip() == str(original_result).strip()
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError: 
         return False
+    except Exception as e:
+        logger.warning(f"Verification failed: {e}")
     finally:
         pending_verifications.pop(key, None)
 
@@ -259,7 +261,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
 
         response_payload = {
             "job_id": job_id,
-            "chunk": chunk,
+            "chunk": str(chunk),
             "status": result["status"],
             "result": result["result"]
         }
@@ -267,7 +269,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
         logger.exception("[Verify] Unexpected error")
         response_payload = {
             "job_id": job_id,
-            "chunk": chunk,
+            "chunk": str(chunk),
             "result": None,
             **error_response(str(e), "VERIFY_EXECUTION_ERROR"),
         }
@@ -348,7 +350,7 @@ async def execute_chunk_task(job_id, chunk):
                         "source": get_node_id(),
                         "payload": {
                             "job_id": job_id,
-                            "chunk": chunk,
+                            "chunk": str(chunk),
                             "status": "success",
                             "result": exec_output.get("result"),
                             "logs": exec_output.get("logs", ""),
@@ -474,11 +476,11 @@ def merge_job_state(local, incoming):
     incoming_in_progress = incoming.get("in_progress", [])
 
     if isinstance(incoming_chunks, list):
-        local["chunks"].update(set(incoming_chunks))
+        local["chunks"].update({str(c) for c in incoming_chunks})
     if isinstance(incoming_completed, list):
-        local["completed"].update(set(incoming_completed))
+        local["completed"].update({str(c) for c in incoming_completed})
     if isinstance(incoming_in_progress, list):
-        local["in_progress"].update(set(incoming_in_progress))
+        local["in_progress"].update({str(c) for c in incoming_in_progress})
 
     local["in_progress"] -= local["completed"]
 
@@ -569,7 +571,7 @@ async def connect_to_relay():
 
                             if action == "claim_chunk":
                                 job_id = payload.get("job_id")
-                                chunk = payload.get("chunk")
+                                chunk = str(payload.get("chunk"))
                                 if job_id is None or chunk is None:
                                     continue
                                 state = init_job(job_id)
@@ -578,7 +580,7 @@ async def connect_to_relay():
 
                             elif action == "complete_chunk":
                                 job_id = payload.get("job_id")
-                                chunk = payload.get("chunk")
+                                chunk = str(payload.get("chunk"))
                                 if job_id is None or chunk is None:
                                     continue
                                 state = init_job(job_id)
@@ -589,14 +591,14 @@ async def connect_to_relay():
 
                             elif action == "verify_chunk":
                                 job_id = payload.get("job_id")
-                                chunk = payload.get("chunk")
+                                chunk = str(payload.get("chunk"))
                                 if job_id is None or chunk is None or not source:
                                     continue
                                 asyncio.create_task(execute_verify_chunk(job_id, chunk, source))
 
                             elif action == "verify_result":
                                 job_id = payload.get("job_id")
-                                chunk = payload.get("chunk")
+                                chunk = str(payload.get("chunk"))
                                 key = (job_id, str(chunk))
                                 fut = pending_verifications.pop(key, None)
                                 if fut and not fut.done():

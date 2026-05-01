@@ -531,7 +531,7 @@ async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
         "type": "verify_chunk",
         "payload": {
             "job_id": job_id,
-            "chunk": int(chunk_key)
+            "chunk": str(chunk_key)
         }
     }, target_node)
 
