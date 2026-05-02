@@ -1193,11 +1193,21 @@ async def cancel_job(job_id: str, api_key: str):
     job["completed_at"] = time.time()
 
     completed = get_completed_count(job)
-    total = job.get("total_chunks", job["chunks"])
+
+    total = job.get("total_chunks")
+    if not isinstance(total, int) or total <= 0:
+        total = len(job.get("chunks_data", []))
+
     price = job.get("price", 0)
 
-    used = (completed / total) * price
-    refund = price - used
+    if total > 0:
+        used = (completed / total) * price
+        refund = price - used
+    else:
+        refund = price  # full refund if no chunks
+
+    refund = max(0, min(price, refund))
+    refund = round(refund, 2)
 
     user_id = job.get("owner")
 
