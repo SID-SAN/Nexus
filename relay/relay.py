@@ -39,6 +39,8 @@ node_stats = {}
 jobs = load_jobs()
 node_owner_map = {}
 credit_update_lock = asyncio.Lock()
+save_lock = asyncio.Lock()
+jobs_dirty = False
 last_peer_list = set()
 
 
@@ -122,10 +124,24 @@ def get_user_load(user_id):
     return load
         
 
+async def mark_jobs_dirty():
+    global jobs_dirty
+    async with save_lock:
+        jobs_dirty = True
+
+
 async def periodic_save():
+    global jobs_dirty
+
     while True:
-        await asyncio.sleep(3)  # 🔥 every 3 sec
-        save_jobs(jobs)
+        await asyncio.sleep(3)  # every 3 sec
+
+        if not jobs_dirty:
+            continue
+
+        async with save_lock:
+            await asyncio.to_thread(save_jobs, jobs)
+            jobs_dirty = False
 
 
 # -----------------------------
@@ -567,6 +583,15 @@ async def startup():
     asyncio.create_task(broadcast_peer_list())
 
 
+@app.on_event("shutdown")
+async def shutdown():
+    global jobs_dirty
+    if jobs_dirty:
+        async with save_lock:
+            await asyncio.to_thread(save_jobs, jobs)
+            jobs_dirty = False
+
+
 # -----------------------------
 # BASIC API
 # -----------------------------
@@ -696,7 +721,7 @@ async def submit_job(
         "updated_at": time.time()
     }
 
-    save_jobs(jobs)
+    await mark_jobs_dirty()
     asyncio.create_task(broadcast_job_manifest(job_id, jobs[job_id]))
 
     return {"job_id": job_id, "chunks": total_chunks}
@@ -880,7 +905,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job["status"] = "failed"
                         job["completed_at"] = time.time()
 
-                    asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
+                    await mark_jobs_dirty()
                     continue
 
                 raw_result = payload.get("result")
@@ -922,7 +947,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job["errors"][chunk_key] = payload.get("error", "")
                 job["status_map"][chunk_key] = "pending"
                 job["updated_at"] = time.time()
-                asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
+                await mark_jobs_dirty()
                 continue
 
             elif msg_type == "verify_result":
@@ -1080,7 +1105,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job["status"] = "failed"
                     job["completed_at"] = time.time()
 
-                asyncio.create_task(asyncio.to_thread(save_jobs, jobs))
+                await mark_jobs_dirty()
 
     except WebSocketDisconnect:
         logger.info(f"Node disconnected: {node_id}")
@@ -1332,5 +1357,6 @@ def dashboard():
         return error_response(f"File not found: {file_path}", "ERROR")
 
     return FileResponse(file_path)
+
 
 
