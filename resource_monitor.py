@@ -17,16 +17,17 @@ async def resource_monitor_loop():
     Continuously monitor CPU and RAM usage and send updates
     to the relay server so the scheduler can make decisions.
     """
+    psutil.cpu_percent(interval=None)
+    node_id = get_node_id()
 
     while True:
-
         try:
             cpu_usage = psutil.cpu_percent(interval=None)
             ram_usage = psutil.virtual_memory().percent
 
             logger.info(f"[Resource] CPU: {cpu_usage}% | RAM: {ram_usage}%")
 
-            ws = relay_client.websocket_connection
+            ws = getattr(relay_client, "websocket_connection", None)
 
             if ws is None:
                 logger.warning("[Resource] No active connection, waiting...")
@@ -35,7 +36,7 @@ async def resource_monitor_loop():
 
             message = {
                 "type": "resource_update",
-                "source": get_node_id(),
+                "source": node_id,
                 "payload": {
                     "cpu": cpu_usage,
                     "ram": ram_usage
@@ -44,12 +45,12 @@ async def resource_monitor_loop():
 
             try:
                 await ws.send(json.dumps(message))
-                logger.info("[Resource] Sent update to relay")
+                logger.debug("[Resource] Sent update to relay")
 
             except Exception as e:
                 # connection probably dropped
                 logger.warning(f"[Resource] Failed to send update: {e}")
-                relay_client.websocket_connection = None
+                setattr(relay_client, "websocket_connection", None)
 
         except Exception:
             logger.exception("[Resource] Monitor error")
