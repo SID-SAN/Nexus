@@ -161,6 +161,20 @@
 
 const BASE_URL = window.location.origin;
 let logInterval;
+let pollInterval = null;
+
+function startPolling() {
+  if (pollInterval) return;
+
+  pollInterval = setInterval(pollDashboard, 4000);
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
 
 function showLogin() {
   const login = document.getElementById("loginPanel");
@@ -174,7 +188,7 @@ function showLogin() {
 
 // Login
 async function login() {
-
+  
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
 
@@ -197,6 +211,7 @@ async function login() {
 
     // optional UX
     document.getElementById("loginPanel").style.display = "none";
+    startPolling();
   } else {
     document.getElementById("loginStatus").innerText =
       "Login failed";
@@ -521,7 +536,16 @@ function toggleSubmit() {
 async function pollDashboard() {
   try {
     const apiKey = localStorage.getItem("api_key");
-    if (!apiKey) return;
+    if (!apiKey) {
+      stopPolling();
+
+      updateNodes({ connected_nodes: [] });
+      updateJobs({});
+      updateStats({ connected_nodes: [] }, {});
+      document.getElementById("credits").innerText = "-";
+
+      return;
+    }
 
     const [nodesRes, jobsRes] = await Promise.all([
       fetch("/cluster_status"),
@@ -540,8 +564,9 @@ async function pollDashboard() {
     console.error("Polling error:", err);
   }
 }
-setInterval(pollDashboard, 4000);
-
+if (localStorage.getItem("api_key")) {
+  startPolling();
+}
 </script>
 </body>
 </html>
