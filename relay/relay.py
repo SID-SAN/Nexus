@@ -483,8 +483,6 @@ def parse_result_value(raw_result):
         return None
 
     try:
-        import re
-
         # extract last number from string
         matches = re.findall(r"-?\d+\.?\d*", str(raw_result))
         if not matches:
@@ -585,11 +583,8 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    global jobs_dirty
-    if jobs_dirty:
-        async with save_lock:
-            await asyncio.to_thread(save_jobs, jobs)
-            jobs_dirty = False
+    async with save_lock:
+        await asyncio.to_thread(save_jobs, jobs)
 
 
 # -----------------------------

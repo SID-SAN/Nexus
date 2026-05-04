@@ -236,7 +236,8 @@ async def request_verification(job_id, chunk, original_result):
     except asyncio.TimeoutError: 
         return False
     except Exception as e:
-        logger.warning(f"Verification failed: {e}")
+            logger.warning(f"Verification failed: {e}")
+            return False 
     finally:
         pending_verifications.pop(key, None)
 
@@ -362,7 +363,16 @@ async def execute_chunk_task(job_id, chunk):
             state["in_progress"].discard(chunk)
     else:
         await asyncio.sleep(FAILED_CHUNK_BACKOFF)
+
+        state = job_cache.get(job_id)
+        if not state:
+            return
+
         state["in_progress"].discard(chunk)
+
+    state = job_cache.get(job_id)
+    if not state:
+        return
 
     total_chunks = state.get("total_chunks", 0)
     if total_chunks and len(state["completed"]) >= total_chunks:

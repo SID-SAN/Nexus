@@ -4,7 +4,7 @@ import shutil
 import time
 from node.docker_runner import run_in_docker
 from logger import setup_logger
-logger = setup_logger()
+logger = setup_logger("executor")
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 BASE_DIR = os.path.abspath("jobs")
