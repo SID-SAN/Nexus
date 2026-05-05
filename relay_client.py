@@ -254,7 +254,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
         extract_path = os.path.join(jobs_base, str(job_id))
         lock = get_download_lock(job_id)
         async with lock:
-            if not os.path.exists(zip_path) and not os.path.exists(extract_path):
+            if not os.path.exists(extract_path):
                 await asyncio.to_thread(download_job, job_id)
 
         chunk_data = job_cache.get(job_id, {}).get("chunk_data_map", {}).get(str(chunk), {})
