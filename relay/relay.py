@@ -775,7 +775,27 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
             msg_type = message.get("type")
 
             if msg_type == "resource_update":
-                node_resources[node_id] = message["payload"]
+                payload = message.get("payload", {})
+
+                if not isinstance(payload, dict):
+                    logger.warning(f"Invalid resource payload from {node_id}")
+                    continue
+
+                try:
+                    cpu = float(payload.get("cpu", 0))
+                    ram = float(payload.get("ram", 0))
+                except (TypeError, ValueError):
+                    logger.warning(f"Malformed resource values from {node_id}")
+                    continue
+
+                # Clamp to valid range
+                cpu = max(0.0, min(cpu, 100.0))
+                ram = max(0.0, min(ram, 100.0))
+
+                node_resources[node_id] = {
+                    "cpu": cpu,
+                    "ram": ram
+                }
 
             elif msg_type == "direct_message":
                 payload = message.get("payload", {})
@@ -890,15 +910,11 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         if s == "failed"
                     ]
 
-                    # 🔥 COMPLETE if ALL chunks are done (success OR fail)
                     if len(completed_chunks) + len(failed_chunks) == total:
                         job["status"] = "completed"
                         job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
                         await send_cleanup_job(job_id, job)
-                    elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
-                        job["status"] = "failed"
-                        job["completed_at"] = time.time()
 
                     await mark_jobs_dirty()
                     continue
@@ -1096,9 +1112,6 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job["final_result"] = compute_final_result(job)
                     job["completed_at"] = time.time()
                     await send_cleanup_job(job_id, job)
-                elif failed_chunks and len(failed_chunks) + len(completed_chunks) == job["chunks"]:
-                    job["status"] = "failed"
-                    job["completed_at"] = time.time()
 
                 await mark_jobs_dirty()
 
