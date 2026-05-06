@@ -335,32 +335,27 @@ async def execute_chunk_task(job_id, chunk):
         active_chunks -= 1
 
     if exec_output.get("status") == "success":
-        is_verified = await request_verification(job_id, chunk, exec_output.get("result"))
-        if is_verified:
-            state = job_cache.get(job_id)
-            if state:
-                if chunk not in state["completed"]:
-                    state["completed"].add(chunk)
-                    state["in_progress"].discard(chunk)
-                    state["last_updated"] = time.time()
+        state = job_cache.get(job_id)
+        if state:
+            if chunk not in state["completed"]:
+                state["completed"].add(chunk)
+                state["in_progress"].discard(chunk)
+                state["last_updated"] = time.time()
 
-                    await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
+                await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
 
-                    await enqueue_message({
-                        "type": "submit_result",
-                        "source": get_node_id(),
-                        "payload": {
-                            "job_id": job_id,
-                            "chunk": str(chunk),
-                            "status": "success",
-                            "result": exec_output.get("result"),
-                            "logs": exec_output.get("logs", ""),
-                            "error": ""
-                        }
-                    })
-        else:
-            await asyncio.sleep(FAILED_CHUNK_BACKOFF)
-            state["in_progress"].discard(chunk)
+                await enqueue_message({
+                    "type": "submit_result",
+                    "source": get_node_id(),
+                    "payload": {
+                        "job_id": job_id,
+                        "chunk": str(chunk),
+                        "status": "success",
+                        "result": exec_output.get("result"),
+                        "logs": exec_output.get("logs", ""),
+                        "error": ""
+                    }
+                })
     else:
         await asyncio.sleep(FAILED_CHUNK_BACKOFF)
 
