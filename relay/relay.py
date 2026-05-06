@@ -134,7 +134,7 @@ async def periodic_save():
     global jobs_dirty
 
     while True:
-        await asyncio.sleep(3)  # every 3 sec
+        await asyncio.sleep(10)
 
         if not jobs_dirty:
             continue

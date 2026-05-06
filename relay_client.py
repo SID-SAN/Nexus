@@ -552,7 +552,7 @@ async def connect_to_relay():
                         elif msg_type == "peer_list":
                             peers = data.get("nodes", [])
                             self_id = get_node_id()
-                            known_peers = set([peer for peer in peers if peer != self_id])
+                            known_peers = {peer for peer in peers if peer != self_id}  
 
                         elif msg_type == "job_manifest":
                             payload = data.get("payload", {})

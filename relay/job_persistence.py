@@ -13,11 +13,14 @@ def _to_json_safe(value):
     return value
 
 def save_jobs(jobs):
-
     os.makedirs("relay/job_store", exist_ok=True)
 
-    with open(STORE_PATH, "w") as f:
+    tmp_path = STORE_PATH + ".tmp"
+
+    with open(tmp_path, "w") as f:
         json.dump(_to_json_safe(jobs), f, indent=2)
+
+    os.replace(tmp_path, STORE_PATH)
 
 
 def load_jobs():
