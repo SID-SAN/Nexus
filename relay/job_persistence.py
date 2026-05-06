@@ -19,6 +19,8 @@ def save_jobs(jobs):
 
     with open(tmp_path, "w") as f:
         json.dump(_to_json_safe(jobs), f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
 
     os.replace(tmp_path, STORE_PATH)
 
