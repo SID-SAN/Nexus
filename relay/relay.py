@@ -1021,9 +1021,19 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                     if price > 0 and chunk_key not in rewarded_chunks:
                         reward_per_chunk = price / job["chunks"]
-                        reward_per_node = round(reward_per_chunk / len(chunk_verify), 4)
+                        reward_nodes = set(chunk_verify.keys())
 
-                        for node in chunk_verify.keys():
+                        original_source = original.get("source")
+
+                        if original_source:
+                            reward_nodes.add(original_source)
+
+                        reward_per_node = round(
+                            reward_per_chunk / max(len(reward_nodes), 1),
+                            4
+                        )
+
+                        for node in reward_nodes:
                             user_id = node_owner_map.get(node)
 
                             if not user_id:
