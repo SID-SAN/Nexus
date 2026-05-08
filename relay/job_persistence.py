@@ -48,4 +48,8 @@ def load_jobs():
         if isinstance(completed_chunks, list):
             job["completed_chunks"] = set(completed_chunks)
 
+        # ✅ Ensure node_owner_snapshot is always a plain dict (safe after JSON round-trip)
+        if "node_owner_snapshot" not in job:
+            job["node_owner_snapshot"] = {}
+
     return jobs

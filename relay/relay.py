@@ -929,14 +929,45 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     continue
 
                 chunk_verify[node_id] = val
+
+                # ✅ Snapshot the owner of this node at the moment of submission
+                # so rewards still work if the node disconnects before verify_result
+                if node_id in node_owner_map:
+                    job.setdefault("node_owner_snapshot", {})[node_id] = node_owner_map[node_id]
+
                 if len(connected_nodes) <= 1:
                     logger.info(f"[Auto Complete] Only one node, skipping verification for chunk {chunk_key}")
 
                     job.setdefault("results", {})
                     job["results"][chunk_key] = val
-
                     job["status_map"][chunk_key] = "completed"
                     job["updated_at"] = time.time()
+
+                    # ✅ Award credits even when verification is skipped (single-node case)
+                    price = job.get("price", 0)
+                    rewarded_chunks = job.setdefault("rewarded_chunks", set())
+
+                    if price > 0 and chunk_key not in rewarded_chunks:
+                        reward_per_chunk = price / job["chunks"]
+                        reward_per_node = round(reward_per_chunk, 4)
+                        user_id = node_owner_map.get(node_id)
+
+                        if user_id:
+                            try:
+                                node_user = get_user_by_id(user_id)
+                                if node_user:
+                                    node_api_key = node_user["api_key"].strip()
+                                    success = adjust_user_credits_by_api_key(node_api_key, reward_per_node)
+                                    if not success:
+                                        logger.error(f"[CRITICAL] Single-node credit update failed for {node_api_key}")
+                                    else:
+                                        logger.info(f"[Reward] {reward_per_node} -> node {node_id} (single-node)")
+                            except Exception:
+                                logger.exception("[Reward] Single-node reward failed")
+                        else:
+                            logger.warning(f"[Reward] No owner found for node {node_id} — chunk {chunk_key} unrewarded")
+
+                        rewarded_chunks.add(chunk_key)
 
                     continue
                 originals.setdefault(chunk_key, {
@@ -1003,6 +1034,10 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 chunk_verify = verification_map.setdefault(chunk_key, {})
                 chunk_verify[node_id] = verify_val
 
+                # ✅ Snapshot verifying node's owner too
+                if node_id in node_owner_map:
+                    job.setdefault("node_owner_snapshot", {})[node_id] = node_owner_map[node_id]
+
                 if original_val == verify_val:
                     job.setdefault("results", {})
                     final_val = original_val if original_val is not None else verify_val
@@ -1030,9 +1065,11 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         )
 
                         for node in reward_nodes:
-                            user_id = node_owner_map.get(node)
+                            # ✅ First try live map, then fall back to job's cached owner snapshot
+                            user_id = node_owner_map.get(node) or job.get("node_owner_snapshot", {}).get(node)
 
                             if not user_id:
+                                logger.warning(f"[Reward] No owner mapping for node {node}, skipping reward")
                                 continue
 
                             try:
@@ -1371,6 +1408,3 @@ def dashboard():
         return error_response(f"File not found: {file_path}", "ERROR")
 
     return FileResponse(file_path)
-
-
-
