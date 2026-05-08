@@ -80,16 +80,12 @@ def update_user_credits_by_api_key(api_key, new_credits):
 def adjust_user_credits_by_api_key(api_key, amount):
     api_key = api_key.strip()
     try:
-        res = supabase.rpc("increment_credits", {
+        supabase.rpc("increment_credits", {
             "user_api_key": api_key,
             "amount": amount
         }).execute()
 
-        # 🔥 STRICT VALIDATION
-        if not res or getattr(res, "data", None) is None:
-            logger.error(f"RPC returned no data for {api_key}")
-            return False
-
+        logger.info(f"[Credits] Updated {amount} for {api_key}")
         return True
 
     except Exception:
