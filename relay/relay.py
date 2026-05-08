@@ -42,6 +42,7 @@ credit_update_lock = asyncio.Lock()
 save_lock = asyncio.Lock()
 jobs_dirty = False
 last_peer_list = set()
+reward_lock = asyncio.Lock()
 
 
 # -----------------------------
@@ -50,7 +51,7 @@ last_peer_list = set()
 MAX_RETRIES = 3
 CHUNK_TIMEOUT = 60
 NODE_TIMEOUT = 60
-VERIFY_TIMEOUT = 5
+VERIFY_TIMEOUT = 20
 
 
 # -----------------------------
@@ -248,9 +249,45 @@ async def monitor_jobs():
                             logger.info(f"[Force Complete] chunk {chunk} after verify timeout")
 
                             job.setdefault("results", {})
+                            verifier_node = verify_requests.get(chunk)
+                            
+                            if verifier_node:
+                                stats = get_node_stats(verifier_node)
+                                stats["timeouts"] += 1
                             job["results"][chunk] = val
 
                             job["status_map"][chunk] = "completed"
+
+                            price = job.get("price", 0)
+                            rewarded_chunks = job.setdefault("rewarded_chunks", set())
+
+                            if price > 0 and chunk not in rewarded_chunks:
+                                reward_per_chunk = price / max(job["chunks"], 1)
+                                original_source = original.get("source")
+
+                                if original_source:
+                                    snapshot = job.get("node_owner_snapshot", {})
+                                    user_id = snapshot.get(original_source)
+
+                                    if user_id:
+                                        try:
+                                            user = get_user_by_id(user_id)
+
+                                            if user:
+                                                api_key = user["api_key"].strip()
+                                                success = adjust_user_credits_by_api_key(
+                                                    api_key,
+                                                    round(reward_per_chunk, 4)
+                                                )
+
+                                                if success:
+                                                    rewarded_chunks.add(chunk)
+                                                    logger.info(
+                                                        f"[Timeout Reward] "
+                                                        f"{reward_per_chunk} -> {original_source}"
+                                                    )
+                                        except Exception:
+                                            logger.exception("[Timeout Reward] Failed")
 
                             job.get("verify_requests", {}).pop(chunk, None)
                             job.get("verification_originals", {}).pop(chunk, None)
@@ -708,6 +745,7 @@ async def submit_job(
         "reducer": reducer,
         "price": price,
         "owner": user["user_id"],
+        "node_owner_snapshot": dict(node_owner_map),
         "created_at": time.time(),
         "updated_at": time.time()
     }
@@ -947,27 +985,31 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     price = job.get("price", 0)
                     rewarded_chunks = job.setdefault("rewarded_chunks", set())
 
-                    if price > 0 and chunk_key not in rewarded_chunks:
-                        reward_per_chunk = price / job["chunks"]
-                        reward_per_node = round(reward_per_chunk, 4)
-                        user_id = node_owner_map.get(node_id)
+                    async with reward_lock:
+                        if price > 0 and chunk_key not in rewarded_chunks:
+                            reward_per_chunk = price / job["chunks"]
+                            reward_per_node = round(reward_per_chunk, 4)
+                            user_id = node_owner_map.get(node_id)
+                            reward_success = False
 
-                        if user_id:
-                            try:
-                                node_user = get_user_by_id(user_id)
-                                if node_user:
-                                    node_api_key = node_user["api_key"].strip()
-                                    success = adjust_user_credits_by_api_key(node_api_key, reward_per_node)
-                                    if not success:
-                                        logger.error(f"[CRITICAL] Single-node credit update failed for {node_api_key}")
-                                    else:
-                                        logger.info(f"[Reward] {reward_per_node} -> node {node_id} (single-node)")
-                            except Exception:
-                                logger.exception("[Reward] Single-node reward failed")
-                        else:
-                            logger.warning(f"[Reward] No owner found for node {node_id} — chunk {chunk_key} unrewarded")
+                            if user_id:
+                                try:
+                                    node_user = get_user_by_id(user_id)
+                                    if node_user:
+                                        node_api_key = node_user["api_key"].strip()
+                                        success = adjust_user_credits_by_api_key(node_api_key, reward_per_node)
+                                        if not success:
+                                            logger.error(f"[CRITICAL] Single-node credit update failed for {node_api_key}")
+                                        else:
+                                            reward_success = True
+                                            logger.info(f"[Reward] {reward_per_node} -> node {node_id} (single-node)")
+                                except Exception:
+                                    logger.exception("[Reward] Single-node reward failed")
+                            else:
+                                logger.warning(f"[Reward] No owner found for node {node_id} — chunk {chunk_key} unrewarded")
 
-                        rewarded_chunks.add(chunk_key)
+                            if reward_success:
+                                rewarded_chunks.add(chunk_key)
 
                     continue
                 originals.setdefault(chunk_key, {
@@ -1016,19 +1058,16 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
                 original_result = original.get("result")
                 verify_result = payload.get("result")
-                original_val = parse_result_value(original_result)
                 verify_val = parse_result_value(verify_result)
+                original_val = parse_result_value(original_result)
+                if payload.get("status") != "success":
+                    logger.warning(f"[Verify] Verification execution failed for chunk {chunk_key}")
+                    continue
 
                 if original_val == verify_val:
                     logger.info(f"[Verify] Chunk {chunk_key} verified by {node_id} against {original_source} ✅")
                 else:
                     logger.warning(f"[Verify] Chunk {chunk_key} mismatch")
-
-                verification_map = job.get("verifications", {})
-                chunk_verify = verification_map.get(chunk_key)
-
-                if chunk_verify and node_id in chunk_verify:
-                    continue
 
                 verification_map = job.setdefault("verifications", {})
                 chunk_verify = verification_map.setdefault(chunk_key, {})
@@ -1050,47 +1089,68 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     price = job.get("price", 0)
                     rewarded_chunks = job.setdefault("rewarded_chunks", set())
 
-                    if price > 0 and chunk_key not in rewarded_chunks:
-                        reward_per_chunk = price / job["chunks"]
-                        reward_nodes = set(chunk_verify.keys())
+                    async with reward_lock:
+                        if price > 0 and chunk_key not in rewarded_chunks:
+                            reward_per_chunk = price / job["chunks"]
+                            reward_nodes = set()
+                            reward_success = False
 
-                        original_source = original.get("source")
+                            for verifier_node in chunk_verify.keys():
+                                if verifier_node:
+                                    reward_nodes.add(verifier_node)
 
-                        if original_source:
-                            reward_nodes.add(original_source)
+                            original_source = original.get("source")
 
-                        reward_per_node = round(
-                            reward_per_chunk / max(len(reward_nodes), 1),
-                            4
-                        )
+                            if original_source:
+                                reward_nodes.add(original_source)
+                            logger.info(f"[Reward] Reward nodes for chunk {chunk_key}: {reward_nodes}")
 
-                        for node in reward_nodes:
-                            # ✅ First try live map, then fall back to job's cached owner snapshot
-                            user_id = node_owner_map.get(node) or job.get("node_owner_snapshot", {}).get(node)
+                            reward_per_node = round(
+                                reward_per_chunk / max(len(reward_nodes), 1),
+                                4
+                            )
 
-                            if not user_id:
-                                logger.warning(f"[Reward] No owner mapping for node {node}, skipping reward")
-                                continue
+                            for node in reward_nodes:
+                                # ✅ First try live map, then fall back to job's cached owner snapshot
+                                snapshot = job.get("node_owner_snapshot", {})
+                                user_id = snapshot.get(node)
 
-                            try:
-                                user = get_user_by_id(user_id)
-
-                                if not user:
+                                if not user_id:
+                                    logger.error(f"[Reward] Missing owner for node {node}")
                                     continue
 
-                                api_key = user["api_key"].strip()
+                                try:
+                                    user = get_user_by_id(user_id)
 
-                                success = adjust_user_credits_by_api_key(api_key, reward_per_node)
-                                if not success:
-                                    logger.error(f"[CRITICAL] Credit update failed for {api_key}")
+                                    if not user:
+                                        continue
 
-                                logger.info(f"[Reward] {reward_per_node} -> node {node}")
+                                    api_key = user["api_key"].strip()
 
-                            except Exception:
-                                logger.exception("Reward update failed")
-                        rewarded_chunks.add(chunk_key)
+                                    logger.info(
+                                        f"[Reward] Attempting reward | "
+                                        f"node={node} | "
+                                        f"user={user_id} | "
+                                        f"amount={reward_per_node}"
+                                    )
+                                    success = adjust_user_credits_by_api_key(api_key, reward_per_node)
+                                    if not success:
+                                        logger.error(f"[CRITICAL] Credit update failed for {api_key}")
+                                        continue
 
-                    for node in chunk_verify.keys():
+                                    reward_success = True
+                                    logger.info(
+                                        f"[Reward SUCCESS] "
+                                        f"{reward_per_node} credits -> node={node} "
+                                        f"user={user_id}"
+                                    )
+
+                                except Exception:
+                                    logger.exception("Reward update failed")
+                            if reward_success:
+                                rewarded_chunks.add(chunk_key)
+
+                    for node in reward_nodes:
                         stats = get_node_stats(node)
                         stats["success"] += 1
 

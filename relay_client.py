@@ -243,7 +243,10 @@ async def request_verification(job_id, chunk, original_result):
 
 
 async def execute_verify_chunk(job_id, chunk, target_node):
-    logger.info(f"[Verify] Verifying chunk {chunk} for job {job_id}")
+    logger.info(
+        f"[VERIFY] Node verifying chunk {chunk} "
+        f"for job {job_id}"
+    )
 
     try:
         if not is_valid_job_id(job_id):
@@ -259,6 +262,10 @@ async def execute_verify_chunk(job_id, chunk, target_node):
 
         chunk_data = job_cache.get(job_id, {}).get("chunk_data_map", {}).get(str(chunk), {})
         result = await asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data)
+        logger.info(
+            f"[VERIFY] Verification complete "
+            f"for chunk {chunk} | status={result.get('status')}"
+        )
 
         response_payload = {
             "job_id": job_id,
@@ -313,6 +320,7 @@ async def execute_chunk_task(job_id, chunk):
 
     chunk_data = state.get("chunk_data_map", {}).get(str(chunk), {})
 
+    logger.info(f"[EXECUTE] Starting chunk {chunk} for job {job_id}")
     active_chunks += 1
     try:
         exec_output = await asyncio.wait_for(
@@ -335,6 +343,10 @@ async def execute_chunk_task(job_id, chunk):
         active_chunks -= 1
 
     if exec_output.get("status") == "success":
+        logger.info(
+            f"[EXECUTE] Completed chunk {chunk} "
+            f"for job {job_id} | result={exec_output.get('result')}"
+        )
         state = job_cache.get(job_id)
         if state:
             if chunk not in state["completed"]:
@@ -357,6 +369,10 @@ async def execute_chunk_task(job_id, chunk):
                     }
                 })
     else:
+        logger.error(
+            f"[EXECUTE] Failed chunk {chunk} "
+            f"for job {job_id} | error={exec_output.get('error')}"
+        )
         await asyncio.sleep(FAILED_CHUNK_BACKOFF)
 
         state = job_cache.get(job_id)
