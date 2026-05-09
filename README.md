@@ -1,216 +1,380 @@
-# Nexus v4.3.0
+# Nexus v5.0.0
 
-### Generic Distributed Compute Platform with Docker Sandbox & Verification Engine
+### Intelligent Distributed Compute Network with Decentralized Verification & Credit Economy
 
-Nexus is a lightweight distributed computing framework that enables multiple machines (nodes) to collaboratively execute **arbitrary user-defined code** over the internet.
+Nexus is a lightweight distributed computing framework that enables multiple machines (nodes) to collaboratively execute **arbitrary user-defined workloads** over the internet using secure Docker sandboxing, decentralized verification, and a distributed reward system. 
 
-With **v4.3.0**, Nexus evolves into a **secure, generic, and verifiable compute platform**, capable of running any workload using containerized execution and multi-node validation.
+With **v5.0.0**, Nexus evolves beyond a simple distributed executor into a **fully asynchronous distributed compute network** featuring:
 
----
-
-# Key Highlights (v4.3.0)
-
-## Generic Execution Engine
-
-- Run **any user-defined code** via `task.py`
-- No hardcoded task types
-- Fully flexible compute model
-- Supports simulations, data processing, and custom workloads
+* decentralized chunk scheduling
+* peer verification
+* node reputation tracking
+* distributed reward distribution
+* resilient retry/recovery systems
+* real-time observability
+* secure execution isolation
 
 ---
 
-##Docker Sandboxed Execution
+# Key Highlights (v5.0.0)
 
-- Each chunk runs inside a **Docker container**
-- CPU & memory limits enforced
-- Network isolation (`--network none`)
-- Safe execution of untrusted code
+## Decentralized Verification Engine
+
+Nexus now uses a true distributed verification pipeline.
+
+### Flow
+
+```text
+Executor Node
+    ↓
+Relay forwards verification
+    ↓
+Independent Verifier Node
+    ↓
+Consensus (match/mismatch)
+```
+
+### Features
+
+* Executor and verifier are different nodes
+* Relay performs orchestration only
+* Automatic mismatch retries
+* Verification timeout recovery
+* Retry limits for unstable chunks
+* Fraud-resistant execution model
 
 ---
 
-## Multi-Node Verification System
+## Fully Asynchronous Execution Model
 
-- Each chunk is executed on **multiple nodes**
-- Results must match before acceptance
-- Automatic retry on mismatch
-- Prevents fake results / credit exploitation
+Workers no longer block while waiting for verification.
+
+### Benefits
+
+* Higher throughput
+* Faster chunk processing
+* Better cluster utilization
+* Reduced node idle time
+* Scales efficiently with more nodes
+
+---
+
+## Distributed Credit Economy
+
+Nexus now includes a functioning compute reward system.
+
+### Features
+
+* Users spend credits to submit jobs
+* Executor nodes earn credits
+* Verifier nodes earn credits
+* Rewards distributed automatically
+* Timeout-safe reward handling
+* Persistent node ownership tracking
+* Reward duplication protection
+
+---
+
+## Intelligent Node Reputation System
+
+Relay tracks node quality and reliability.
+
+### Metrics
+
+* successful executions
+* failed executions
+* mismatches
+* verification timeouts
+
+### Benefits
+
+* Future-proof trust scoring
+* Foundation for reputation-aware scheduling
+* Fraud detection support
+
+---
+
+## Secure Docker Sandboxing
+
+Every chunk executes inside an isolated Docker container.
+
+### Security Features
+
+* CPU & memory limits
+* Network isolation (`--network none`)
+* Temporary execution environment
+* Safe execution of untrusted workloads
+
+---
+
+## Generic Distributed Execution
+
+Run any custom workload using `task.py`.
+
+### Supported Workloads
+
+* simulations
+* distributed math
+* file processing
+* data pipelines
+* scientific workloads
+* custom compute jobs
 
 ---
 
 ## Smart Chunking System
 
-Supports multiple chunking strategies:
+Supports multiple chunking strategies.
 
-- Range-based
-- File-based
-- Default chunk IDs
+### Supported Modes
 
-Configured via `config.json`
+* range-based chunking
+* file-list chunking
+* automatic chunk generation
 
----
-
-## Credit-Based Economy
-
-- Users pay credits to submit jobs
-- Nodes earn credits per verified chunk
-- Rewards split across verifying nodes
-- Refunds for cancelled jobs
+Configured via `config.json`.
 
 ---
 
-## Multi-User System
+## Fault Tolerance & Recovery
 
-- Email + password authentication
-- API key-based access
-- Per-user job isolation
-- Secure job ownership & cancellation
+Nexus is designed to survive unreliable nodes.
 
----
+### Automatic Recovery
 
-## Intelligent Scheduler (Upgraded)
-
-- Progress-aware job prioritization
-- Fairness across users
-- Load-aware scheduling
-- Duplicate chunk assignment for verification
-- Prevents starvation & stuck jobs
+* node disconnect recovery
+* stale node cleanup
+* verification retry system
+* execution retries
+* timeout handling
+* forced completion fallback
+* failed chunk recovery
 
 ---
 
-## Fault Tolerance & Retry System
+## Real-Time Cluster Visibility
 
-- Automatic retry on:
-  - Node failure
-  - Timeout
-  - Execution error
-- Max retry limit enforcement
-- Job-level failure detection
+Nodes and jobs are now fully observable.
+
+### Features
+
+* live execution logs
+* verification logs
+* reward logs
+* cluster resource monitoring
+* chunk-level status tracking
+* execution speed tracking
+* node resource visibility
 
 ---
 
-## Execution Insights
+## Persistent Job Recovery
 
-- Real-time job progress
-- Chunk-level logs & errors
-- Job duration tracking
-- Execution speed (chunks/sec)
+Jobs survive relay restarts safely.
+
+### Features
+
+* periodic job persistence
+* atomic job saves
+* crash-safe restoration
+* reconnect-safe ownership snapshots
 
 ---
 
 ## Real-Time Dashboard
 
-- Submit jobs via UI
-- Monitor cluster & nodes
-- View logs and results
-- Track credits
+Modern web dashboard for monitoring and management.
+
+### Features
+
+* user authentication
+* live cluster monitoring
+* job submission
+* progress tracking
+* chunk logs & errors
+* credit tracking
+* node visibility
 
 ---
 
-## Executable Node
+## Executable Worker Nodes
 
-- Run nodes via `.exe` (no Python required)
-- Simple CLI interface
-- Plug-and-play setup
+Run nodes without requiring Python installation.
+
+### Supported Modes
+
+#### EXE Mode
+
+```bash
+nexus-node.exe start --node-id PC_1 --api-key YOUR_API_KEY
+```
+
+#### Python Mode
+
+```bash
+python nexus_node.py start --node-id PC_1 --api-key YOUR_API_KEY
+```
 
 ---
 
 # Architecture
 
-## 🔹 Relay Server (FastAPI)
+## Relay Server (FastAPI)
 
-Central coordinator.
+The relay is now primarily an orchestration layer.
 
-### Responsibilities:
+### Responsibilities
 
-- Accept job submissions
-- Parse job config & generate chunks
-- Assign work to nodes
-- Track execution & verification
-- Aggregate results
-- Manage credits
+* manage jobs
+* coordinate verification
+* track node state
+* distribute rewards
+* maintain cluster state
+* aggregate final results
+* persist job state
 
----
+### Important
 
-## 🔹 Worker Nodes
+The relay performs:
 
-Distributed compute units.
+```text
+NO actual computation
+```
 
-### Features:
-
-- Connect via WebSocket
-- Execute chunks inside Docker
-- Send results + logs
-- Participate in verification
-- Earn credits
+This allows deployment on lightweight/free-tier infrastructure.
 
 ---
 
-## 🔹 Dashboard (Frontend)
+## Worker Nodes
 
-User interface.
+Distributed compute participants.
 
-### Features:
+### Features
 
-- User login
-- Job submission
-- Cluster monitoring
-- Live job tracking
-- Credit management
+* execute chunks
+* verify peer computations
+* sandbox execution in Docker
+* monitor resources
+* earn credits
+* perform decentralized verification
+
+---
+
+## Dashboard
+
+Frontend management interface.
+
+### Features
+
+* login/signup
+* submit jobs
+* monitor jobs
+* inspect logs
+* track credits
+* monitor cluster health
 
 ---
 
 # Execution Flow
 
-1. User logs in  
-2. Uploads `job.zip` via dashboard  
+1. User logs into dashboard
+2. User uploads `job.zip`
 3. Relay:
-   - deducts credits
-   - parses config
-   - generates chunks  
+
+   * deducts credits
+   * parses config
+   * creates chunks
+   * broadcasts manifest
 4. Nodes:
-   - request chunks
-   - execute in Docker
-   - return results  
+
+   * schedule chunks locally
+   * execute chunks
+   * submit results
 5. Relay:
-   - verifies results (multi-node)
-   - retries if mismatch
-   - distributes rewards  
-6. Job completes → result aggregated  
+
+   * forwards verification
+6. Verifier node:
+
+   * independently re-executes chunk
+   * submits verification result
+7. Relay:
+
+   * validates match/mismatch
+   * retries failed verifications
+   * distributes rewards
+8. Final reducer computes output
+9. Job completes
+
+---
+
+# Core Compute Model
+
+Nexus follows:
+
+# MAP → VERIFY → REDUCE
+
+### MAP
+
+Distributed chunk execution.
+
+### VERIFY
+
+Independent peer validation.
+
+### REDUCE
+
+Aggregation of verified outputs.
+
+---
+
+# Supported Reducers
+
+* `sum`
+* `avg`
+* `min`
+* `max`
+* `list`
 
 ---
 
 # Job Format
 
-```
-
+```text
 job.zip
 ├── task.py
 ├── config.json (optional)
 └── requirements.txt (optional)
-
-````
+```
 
 ---
 
-## 🔹 task.py
+## task.py
 
 ```python
 import sys
 
-chunk = int(sys.argv[1])
+chunk_id = sys.argv[1]
 
-# your logic here
 print(result)
-````
-> ⚠️ Important: Tasks must be **chunk-aware**.  
-> Each chunk should process a **specific portion of data**, not the entire dataset.  
-> For range-based jobs, use `start` and `end` arguments provided via `config.json`.
+```
+
+### Important
+
+Tasks must be chunk-aware.
+
+For range jobs, Nexus provides:
+
+```text
+start end
+```
+
+arguments automatically.
 
 ---
 
-## 🔹 config.json
+## config.json
 
-### Range-based
+### Range-Based Chunking
 
 ```json
 {
@@ -221,78 +385,115 @@ print(result)
 }
 ```
 
-### File-based
+---
+
+### File-Based Chunking
 
 ```json
 {
   "chunk_type": "file_list",
-  "files": ["file1.csv", "file2.csv"]
+  "files": [
+    "file1.csv",
+    "file2.csv"
+  ]
 }
 ```
 
 ---
 
-## 🔹 requirements.txt (Optional)
+## requirements.txt
 
-```
+Optional Python dependencies.
+
+```text
 numpy
 pandas
+scipy
 ```
 
-Dependencies are installed once per job.
+Dependencies install automatically inside containers.
 
 ---
 
-# Core Model
+# Resource-Aware Scheduling
 
-Nexus follows a:
+Nodes continuously report:
 
-**MAP → VERIFY → REDUCE**
+* CPU usage
+* RAM usage
 
-* Map → execute chunks
-* Verify → validate across nodes
-* Reduce → aggregate results
+Nexus uses this data for:
 
----
-
-## Supported Reducers
-
-* `sum`
-* `avg`
-* `min`
-* `max`
-* `list`
+* chunk balancing
+* node selection
+* load-aware execution
 
 ---
 
-# Running a Node
+# Reliability Features
 
-## Using EXE
+## Verification Retry System
 
-```bash
-nexus-node.exe start --node-id PC_1 --api-key YOUR_API_KEY
-```
+Mismatch handling includes:
 
-## Using Python
-
-```bash
-python nexus_node.py start --node-id PC_1 --api-key YOUR_API_KEY
-```
+* automatic retries
+* chunk requeueing
+* permanent failure detection
 
 ---
 
-# Getting API Key
+## Timeout Recovery
 
-1. Open dashboard
-2. Create account
-3. Login
-4. API key is auto-managed
+If verification stalls:
+
+* relay force-completes trusted results
+* rewards still distribute correctly
+* timeout statistics update automatically
+
+---
+
+## Crash Safety
+
+* atomic persistence
+* reconnect-safe ownership tracking
+* safe cleanup system
+* download locking
+* secure extraction logic
+
+---
+
+# Security Features
+
+## Safe ZIP Extraction
+
+Prevents:
+
+* path traversal
+* overwrite attacks
+* unsafe extraction
+
+---
+
+## Sandboxed Execution
+
+Every task executes in isolated containers.
+
+---
+
+## Input Validation
+
+Includes:
+
+* job ID validation
+* payload validation
+* safe resource parsing
+* protected file handling
 
 ---
 
 # Project Structure
 
-```
+```text
 Nexus/
 ├── relay/
 ├── node/
@@ -306,41 +507,44 @@ Nexus/
 
 # Current Limitations
 
-* Single relay (centralized)
+* Single relay architecture
 * No GPU scheduling yet
-* Basic reducers
+* Basic reducers only
 * No distributed storage
+* Verification uses executor + 1 verifier
 
 ---
 
-# Roadmap
+# v6 Roadmap
 
+* Relay-less architecture
+* P2P coordination
+* Advanced consensus verification
 * GPU compute support
-* Advanced scheduling
-* Multi-relay architecture
-* Distributed storage
-* Job marketplace
-* P2P node discovery
+* Reputation-aware scheduling
+* Marketplace economics
+* Distributed storage layer
+* Multi-region networking
 
 ---
 
 # Vision
 
-> Build a decentralized, secure, and intelligent compute network
-> where anyone can contribute compute and earn.
+> Build a decentralized, secure, intelligent compute network
+> where anyone can contribute compute power and earn.
 
 ---
 
 # Contributing
 
 * Open issues
-* Suggest features
-* Submit PRs
+* Suggest improvements
+* Submit pull requests
 
 ---
 
-# ⭐ Final Note
+# Final Note
 
-Nexus v4.3.0 transforms the system into a **secure, generic distributed compute platform** with real-world execution capabilities.
+Nexus v5.0.0 transforms the project into a real distributed compute network with decentralized execution, verification, recovery, and reward distribution.
 
-If you found this interesting, consider ⭐ starring the repo!
+If you found this interesting, consider starring the repository ⭐
