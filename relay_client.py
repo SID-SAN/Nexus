@@ -49,15 +49,15 @@ PEER_GOSSIP_INTERVAL = 30
 PEER_STALE_TIMEOUT = 90
 
 job_cache = {}
-pending_verifications = {}
+local_verifications = {}
 send_queue = asyncio.Queue(maxsize=1000)
 work_loop_started = False
 
 active_chunks = 0
 MAX_CONCURRENT_CHUNKS = 2
-VERIFY_TIMEOUT = 30
 CLAIM_JITTER_MAX = 0.2
 FAILED_CHUNK_BACKOFF = 1
+LOCAL_VERIFY_TIMEOUT = 45
 COMPLETED_JOB_TTL = 120
 STALE_JOB_TTL = 3600
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
@@ -257,6 +257,8 @@ async def send_job_sync(job_id):
     state = job_cache.get(job_id)
     if not state:
         return
+    if state.get("status") == "completed":
+        return
 
     now = time.time()
     if now - state.get("last_sync", 0) < SYNC_INTERVAL:
@@ -290,40 +292,49 @@ async def cleanup_job_cache(job_id):
     logger.info(f"[Cache] Cleaned job {job_id}")
 
 
-async def request_verification(job_id, chunk, original_result):
-    if not known_peers:
-        return True
+async def verification_timeout_loop():
+    while True:
+        await asyncio.sleep(5)
 
-    peer = random.choice(list(known_peers))
-    key = (job_id, str(chunk))
-    loop = asyncio.get_running_loop()
-    fut = loop.create_future()
-    pending_verifications[key] = fut
+        now = time.time()
+        expired = []
 
-    await enqueue_message({
-        "type": "direct_message",
-        "payload": {
-            "target": peer,
-            "action": "verify_chunk",
-            "job_id": job_id,
-            "chunk": str(chunk)
-        }
-    })
-    try:
-        verify_payload = await asyncio.wait_for(fut, timeout=VERIFY_TIMEOUT)
-        verify_status = verify_payload.get("status")
-        verify_result = verify_payload.get("result")
-        return verify_status == "success" and str(verify_result).strip() == str(original_result).strip()
-    except asyncio.TimeoutError: 
-        return False
-    except Exception as e:
-            logger.warning(f"Verification failed: {e}")
-            return False 
-    finally:
-        pending_verifications.pop(key, None)
+        for key, verification in list(local_verifications.items()):
+            if now - verification["timestamp"] > LOCAL_VERIFY_TIMEOUT:
+                expired.append(key)
+
+        for key in expired:
+            job_id, chunk = key
+
+            logger.warning(
+                f"[VERIFY] Verification timeout "
+                f"for chunk {chunk}"
+            )
+
+            state = job_cache.get(job_id)
+
+            if state:
+                state["completed"].discard(chunk)
+                state["in_progress"].discard(chunk)
+                state["last_updated"] = time.time()
+                await broadcast_action(
+                    "chunk_requeue",
+                    job_id=job_id,
+                    chunk=chunk
+                )
+
+            local_verifications.pop(key, None)
 
 
 async def execute_verify_chunk(job_id, chunk, target_node):
+    state = job_cache.get(job_id)
+    if state and str(chunk) in state.get("completed", set()):
+        logger.info(
+            f"[VERIFY] Skipping already completed "
+            f"chunk {chunk}"
+        )
+        return
+    
     logger.info(
         f"[VERIFY] Node verifying chunk {chunk} "
         f"for job {job_id}"
@@ -428,27 +439,57 @@ async def execute_chunk_task(job_id, chunk):
             f"[EXECUTE] Completed chunk {chunk} "
             f"for job {job_id} | result={exec_output.get('result')}"
         )
-        state = job_cache.get(job_id)
-        if state:
-            if chunk not in state["completed"]:
+        eligible_peers = [
+            p for p in known_peers
+            if p != get_node_id()
+        ]
+        if eligible_peers:
+            verifier = random.choice(eligible_peers)
+            verification_key = (job_id, str(chunk))
+            local_verifications[verification_key] = {
+                "verifier": verifier,
+                "original_result": exec_output.get("result"),
+                "timestamp": time.time(),
+                "logs": exec_output.get("logs", "")
+            }
+            await enqueue_message({
+                "type": "direct_message",
+                "payload": {
+                    "target": verifier,
+                    "action": "verify_chunk",
+                    "job_id": job_id,
+                    "chunk": str(chunk)
+                }
+            })
+        else:
+            logger.warning(
+                f"[VERIFY] No verifier available, "
+                f"auto-accepting chunk {chunk}"
+            )
+            state = job_cache.get(job_id)
+            if state and chunk not in state["completed"]:
                 state["completed"].add(chunk)
                 state["in_progress"].discard(chunk)
                 state["last_updated"] = time.time()
 
-                await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
+                await broadcast_action(
+                    "complete_chunk",
+                    job_id=job_id,
+                    chunk=chunk
+                )
 
-                await enqueue_message({
-                    "type": "submit_result",
-                    "source": get_node_id(),
-                    "payload": {
-                        "job_id": job_id,
-                        "chunk": str(chunk),
-                        "status": "success",
-                        "result": exec_output.get("result"),
-                        "logs": exec_output.get("logs", ""),
-                        "error": ""
-                    }
-                })
+            await enqueue_message({
+                "type": "submit_result",
+                "source": get_node_id(),
+                "payload": {
+                    "job_id": job_id,
+                    "chunk": str(chunk),
+                    "status": "success",
+                    "result": exec_output.get("result"),
+                    "logs": exec_output.get("logs", ""),
+                    "error": ""
+                }
+            })
     else:
         logger.error(
             f"[EXECUTE] Failed chunk {chunk} "
@@ -629,6 +670,7 @@ async def connect_to_relay():
                         asyncio.create_task(scheduler_loop())
                         asyncio.create_task(cache_maintenance_loop())
                         asyncio.create_task(peer_gossip_loop())
+                        asyncio.create_task(verification_timeout_loop())
                         work_loop_started = True
 
                     while True:
@@ -680,7 +722,8 @@ async def connect_to_relay():
                                 if job_id is None or chunk is None:
                                     continue
                                 state = init_job(job_id)
-                                state["in_progress"].add(chunk)
+                                if chunk not in state["completed"]:
+                                    state["in_progress"].add(chunk)
                                 state["last_updated"] = time.time()
 
                             elif action == "complete_chunk":
@@ -704,16 +747,96 @@ async def connect_to_relay():
                             elif action == "verify_result":
                                 job_id = payload.get("job_id")
                                 chunk = str(payload.get("chunk"))
-                                key = (job_id, str(chunk))
-                                fut = pending_verifications.pop(key, None)
-                                if fut and not fut.done():
-                                    fut.set_result(payload)
+                                verification_key = (job_id, str(chunk))
+                                verification = local_verifications.get(verification_key)
+
+                                if not verification:
+                                    continue
+                                if source != verification.get("verifier"):
+                                    logger.warning(
+                                        f"[VERIFY] Ignoring verification from "
+                                        f"unexpected source for chunk {chunk} job {job_id}"
+                                    )
+                                    local_verifications.pop(verification_key, None)
+                                    continue
+
+                                original_result = str(
+                                    verification["original_result"]
+                                ).strip()
+                                verify_result = str(
+                                    payload.get("result")
+                                ).strip()
+
+                                if (
+                                    payload.get("status") == "success"
+                                    and original_result == verify_result
+                                ):
+                                    logger.info(
+                                        f"[VERIFY] Verified chunk {chunk} "
+                                        f"for job {job_id}"
+                                    )
+
+                                    state = job_cache.get(job_id)
+                                    if state and chunk not in state["completed"]:
+                                        state["completed"].add(chunk)
+                                        state["in_progress"].discard(chunk)
+                                        state["last_updated"] = time.time()
+                                        await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
+
+                                    await enqueue_message({
+                                        "type": "submit_result",
+                                        "source": get_node_id(),
+                                        "payload": {
+                                            "job_id": job_id,
+                                            "chunk": str(chunk),
+                                            "status": "success",
+                                            "result": verification["original_result"],
+                                            "logs": verification.get("logs", ""),
+                                            "error": ""
+                                        }
+                                    })
+                                    state = job_cache.get(job_id)
+
+                                    if state:
+                                        total_chunks = state.get("total_chunks", 0)
+
+                                        if total_chunks and len(state["completed"]) >= total_chunks:
+                                            state["status"] = "completed"
+
+                                            await broadcast_action(
+                                                "job_complete",
+                                                job_id=job_id
+                                            )
+
+                                            if not state.get("cleanup_scheduled"):
+                                                state["cleanup_scheduled"] = True
+                                                asyncio.create_task(cleanup_job_cache(job_id))
+                                else:
+                                    logger.warning(
+                                        f"[VERIFY] Mismatch for chunk {chunk} "
+                                        f"job {job_id}"
+                                    )
+
+                                    state = job_cache.get(job_id)
+                                    if state:
+                                        state["completed"].discard(chunk)
+                                        state["in_progress"].discard(chunk)
+                                        state["last_updated"] = time.time()
+                                        await broadcast_action(
+                                                "chunk_requeue",
+                                                job_id=job_id,
+                                                chunk=chunk
+                                            )
+
+                                local_verifications.pop(verification_key, None)
 
                             elif action == "job_complete":
                                 job_id = payload.get("job_id")
+
                                 if job_id:
                                     state = init_job(job_id)
                                     state["status"] = "completed"
+                                    state["last_updated"] = time.time()
 
                             elif action == "job_sync":
                                 job_id = payload.get("job_id")
@@ -726,7 +849,14 @@ async def connect_to_relay():
                             elif action == "job_cleanup":
                                 job_id = payload.get("job_id")
                                 if job_id:
+                                    await asyncio.to_thread(cleanup_job_files, job_id)
                                     job_cache.pop(job_id, None)
+                                    stale_keys = [
+                                        key for key in local_verifications
+                                        if key[0] == job_id
+                                    ]
+                                    for key in stale_keys:
+                                        local_verifications.pop(key, None)
 
                             elif action == "peer_exchange":
                                 if source:
@@ -740,8 +870,21 @@ async def connect_to_relay():
                                         if isinstance(peer_id, str):
                                             add_peer(peer_id)
 
-                                if source:
-                                    add_peer(source)
+                            elif action == "chunk_requeue":
+                                job_id = payload.get("job_id")
+                                chunk = str(payload.get("chunk"))
+
+                                if job_id is None or chunk is None:
+                                    continue
+
+                                state = init_job(job_id)
+                                if state.get("status") == "completed":
+                                    continue
+
+                                state["completed"].discard(chunk)
+                                state["in_progress"].discard(chunk)
+                                state["last_updated"] = time.time()
+                                local_verifications.pop((job_id, chunk), None)
 
             except Exception as e:
                 logger.exception(f"[Relay] Failed {base_url}")
