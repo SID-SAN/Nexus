@@ -7,7 +7,7 @@ NODE_ID = os.getenv("NODE_ID", "node_default")
 HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", 5001))
 
-RELAY_URLS = ["https://nexus-wr6s.onrender.com"]
+RELAY_URLS = ["https://nexus-relay-5wog.onrender.com"]
 
 # Request timeout
 REQUEST_TIMEOUT = 5

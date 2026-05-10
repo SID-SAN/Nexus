@@ -42,6 +42,12 @@ def get_download_lock(job_id):
 
 websocket_connection = None
 known_peers = set()
+peer_last_seen = {}
+peer_scores = {}
+MAX_PEERS = 8
+PEER_GOSSIP_INTERVAL = 30
+PEER_STALE_TIMEOUT = 90
+
 job_cache = {}
 pending_verifications = {}
 send_queue = asyncio.Queue(maxsize=1000)
@@ -157,6 +163,81 @@ def validate_chunk_data(chunk_data):
 
     return valid_data
 
+def add_peer(peer_id):
+    if not peer_id:
+        return
+
+    if peer_id == get_node_id():
+        return
+
+    peer_last_seen[peer_id] = time.time()
+
+    if len(known_peers) >= MAX_PEERS and peer_id not in known_peers:
+        return
+
+    known_peers.add(peer_id)
+    if peer_id not in peer_scores:
+        peer_scores[peer_id] = {
+            "success": 0,
+            "timeouts": 0,
+            "mismatches": 0
+        }
+
+
+def remove_stale_peers():
+    now = time.time()
+
+    stale = [
+        peer
+        for peer, last_seen in peer_last_seen.items()
+        if now - last_seen > PEER_STALE_TIMEOUT
+    ]
+
+    for peer in stale:
+        known_peers.discard(peer)
+        peer_last_seen.pop(peer, None)
+        peer_scores.pop(peer, None)
+
+        logger.info(f"[Peers] Removed stale peer {peer}")
+
+async def peer_gossip_loop():
+    while True:
+        try:
+            await asyncio.sleep(PEER_GOSSIP_INTERVAL)
+
+            if not known_peers:
+                continue
+
+            remove_stale_peers()
+
+            peers = list(known_peers)
+
+            selected = random.sample(
+                peers,
+                min(2, len(peers))
+            )
+
+            known_subset = random.sample(
+                peers,
+                min(5, len(peers))
+            )
+
+            for peer_id in selected:
+                await enqueue_message({
+                    "type": "direct_message",
+                    "payload": {
+                        "target": peer_id,
+                        "action": "peer_exchange",
+                        "peers": [
+                            p for p in known_subset
+                            if p != peer_id
+                        ]
+                    }
+                })
+
+        except Exception:
+            logger.exception("[Peers] Gossip loop failed")
+            await asyncio.sleep(5)
 
 async def broadcast_action(action, **kwargs):
     peers = list(known_peers)
@@ -547,6 +628,7 @@ async def connect_to_relay():
                         asyncio.create_task(sender_loop())
                         asyncio.create_task(scheduler_loop())
                         asyncio.create_task(cache_maintenance_loop())
+                        asyncio.create_task(peer_gossip_loop())
                         work_loop_started = True
 
                     while True:
@@ -563,7 +645,9 @@ async def connect_to_relay():
                         elif msg_type == "peer_list":
                             peers = data.get("nodes", [])
                             self_id = get_node_id()
-                            known_peers = {peer for peer in peers if peer != self_id}  
+                            for peer in peers:
+                                if peer != self_id:
+                                    add_peer(peer)
 
                         elif msg_type == "job_manifest":
                             payload = data.get("payload", {})
@@ -643,6 +727,22 @@ async def connect_to_relay():
                                 job_id = payload.get("job_id")
                                 if job_id:
                                     job_cache.pop(job_id, None)
+
+                            elif action == "peer_exchange":
+                                if source:
+                                    add_peer(source)
+                                else:
+                                    continue
+                                peers = payload.get("peers", [])
+
+                                if isinstance(peers, list):
+                                    for peer_id in peers:
+                                        if isinstance(peer_id, str):
+                                            add_peer(peer_id)
+
+                                if source:
+                                    add_peer(source)
+
             except Exception as e:
                 logger.exception(f"[Relay] Failed {base_url}")
 
