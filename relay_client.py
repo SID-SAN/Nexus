@@ -58,6 +58,7 @@ MAX_CONCURRENT_CHUNKS = 2
 CLAIM_JITTER_MAX = 0.2
 FAILED_CHUNK_BACKOFF = 1
 LOCAL_VERIFY_TIMEOUT = 45
+CLAIM_TIMEOUT = 300
 COMPLETED_JOB_TTL = 120
 STALE_JOB_TTL = 3600
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
@@ -90,7 +91,7 @@ def build_job_state(job):
         "total_chunks": job.get("total_chunks", 0),
         "chunks": list(job.get("chunks", set())),
         "completed": list(job.get("completed", set())),
-        "in_progress": list(job.get("in_progress", set())),
+        "claims": job.get("claims", {}),
         "status": job.get("status", "running"),
         "chunk_data_map": job.get("chunk_data_map", {}),
         "last_updated": job.get("last_updated", time.time())
@@ -101,7 +102,7 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
     state = job_cache.setdefault(job_id, {
         "chunks": set(),
         "completed": set(),
-        "in_progress": set(),
+        "claims": {},
         "status": "running",
         "cleanup_scheduled": False,
         "chunk_data_map": {},
@@ -127,7 +128,12 @@ def pick_next_chunk():
         if job.get("status") != "running":
             continue
 
-        available = job["chunks"] - job["in_progress"] - job["completed"]
+        claimed_chunks = set(job.get("claims", {}).keys())
+        available = (
+            job["chunks"]
+            - claimed_chunks
+            - job["completed"]
+        )
         if available:
             return job_id, str(random.choice(list(available)))
 
@@ -315,7 +321,7 @@ async def verification_timeout_loop():
 
             if state:
                 state["completed"].discard(chunk)
-                state["in_progress"].discard(chunk)
+                state["claims"].pop(chunk, None)
                 state["last_updated"] = time.time()
                 await broadcast_action(
                     "chunk_requeue",
@@ -328,7 +334,20 @@ async def verification_timeout_loop():
 
 async def execute_verify_chunk(job_id, chunk, target_node):
     state = job_cache.get(job_id)
-    if state and str(chunk) in state.get("completed", set()):
+
+    if not state:
+        return
+
+    claim = state.get("claims", {}).get(str(chunk))
+
+    if claim and claim.get("owner") != target_node:
+        logger.warning(
+            f"[VERIFY] Rejecting stale verifier request "
+            f"for chunk {chunk}"
+        )
+        return
+
+    if str(chunk) in state.get("completed", set()):
         logger.info(
             f"[VERIFY] Skipping already completed "
             f"chunk {chunk}"
@@ -386,8 +405,24 @@ async def execute_verify_chunk(job_id, chunk, target_node):
 
 async def execute_chunk_task(job_id, chunk):
     global active_chunks
-
     state = job_cache.get(job_id)
+
+    if not state:
+        return
+
+    claim = state.get("claims", {}).get(chunk)
+
+    if not claim:
+        logger.info(
+            f"[Claims] Lost ownership of chunk {chunk}"
+        )
+        return
+
+    if claim.get("owner") != get_node_id():
+        logger.info(
+            f"[Claims] Another node owns chunk {chunk}"
+        )
+        return
     if not state or state.get("status") != "running":
         return
 
@@ -407,7 +442,7 @@ async def execute_chunk_task(job_id, chunk):
                     pass
     except Exception as e:
         logger.exception("[Node] Download failed")
-        state["in_progress"].discard(chunk)
+        state["claims"].pop(chunk, None)
         return
 
     chunk_data = state.get("chunk_data_map", {}).get(str(chunk), {})
@@ -433,6 +468,20 @@ async def execute_chunk_task(job_id, chunk):
         }
     finally:
         active_chunks -= 1
+
+    state = job_cache.get(job_id)
+
+    if not state:
+        return
+
+    latest_claim = state.get("claims", {}).get(chunk)
+
+    if latest_claim and latest_claim.get("owner") != get_node_id():
+        logger.warning(
+            f"[Claims] Lost ownership during execution "
+            f"of chunk {chunk}"
+        )
+        return
 
     if exec_output.get("status") == "success":
         logger.info(
@@ -469,7 +518,7 @@ async def execute_chunk_task(job_id, chunk):
             state = job_cache.get(job_id)
             if state and chunk not in state["completed"]:
                 state["completed"].add(chunk)
-                state["in_progress"].discard(chunk)
+                state["claims"].pop(chunk, None)
                 state["last_updated"] = time.time()
 
                 await broadcast_action(
@@ -501,7 +550,7 @@ async def execute_chunk_task(job_id, chunk):
         if not state:
             return
 
-        state["in_progress"].discard(chunk)
+        state["claims"].pop(chunk, None)
 
     state = job_cache.get(job_id)
     if not state:
@@ -542,16 +591,29 @@ async def scheduler_loop():
 
         async with claim_lock:
             # 🔥 RE-CHECK INSIDE LOCK (CRITICAL)
-            available = state["chunks"] - state["in_progress"] - state["completed"]
+            claimed_chunks = set(state.get("claims", {}).keys())
+            available = state["chunks"] - claimed_chunks - state["completed"]
 
             if chunk not in available or state.get("status") != "running":
                 continue
 
             # 🔥 ATOMIC CLAIM
-            state["in_progress"].add(chunk)
+            claim = {
+                "owner": get_node_id(),
+                "timestamp": time.time(),
+                "epoch": state["claims"].get(chunk, {}).get("epoch", 0) + 1
+            }
+            state["claims"][chunk] = claim
             state["last_updated"] = time.time()
 
-        await broadcast_action("claim_chunk", job_id=job_id, chunk=chunk)
+        await broadcast_action(
+            "claim_chunk",
+            job_id=job_id,
+            chunk=chunk,
+            owner=claim["owner"],
+            timestamp=claim["timestamp"],
+            epoch=claim["epoch"]
+        )
         asyncio.create_task(execute_chunk_task(job_id, chunk))
 
         await asyncio.sleep(0.1)
@@ -577,6 +639,32 @@ async def cache_maintenance_loop():
         for job_id in to_remove:
             job_cache.pop(job_id, None)
             logger.info(f"[Cache] Pruned stale job {job_id}")
+
+
+async def claim_cleanup_loop():
+    while True:
+        await asyncio.sleep(10)
+        now = time.time()
+
+        for job_id, state in list(job_cache.items()):
+            stale = []
+
+            for chunk, claim in state.get("claims", {}).items():
+                if now - claim.get("timestamp", 0) > CLAIM_TIMEOUT:
+                    stale.append(chunk)
+
+            for chunk in stale:
+                logger.warning(
+                    f"[Claims] Expired stale claim "
+                    f"{chunk} for job {job_id}"
+                )
+                state["claims"].pop(chunk, None)
+                await broadcast_action(
+                    "chunk_requeue",
+                    job_id=job_id,
+                    chunk=chunk
+                )
+                state["last_updated"] = time.time()
 
 
 async def sender_loop():
@@ -616,16 +704,37 @@ def merge_job_state(local, incoming):
 
     incoming_chunks = incoming.get("chunks", [])
     incoming_completed = incoming.get("completed", [])
-    incoming_in_progress = incoming.get("in_progress", [])
+    incoming_claims = incoming.get("claims", {})
 
     if isinstance(incoming_chunks, list):
         local["chunks"].update({str(c) for c in incoming_chunks})
     if isinstance(incoming_completed, list):
         local["completed"].update({str(c) for c in incoming_completed})
-    if isinstance(incoming_in_progress, list):
-        local["in_progress"].update({str(c) for c in incoming_in_progress})
+    if isinstance(incoming_claims, dict):
+        for chunk, incoming_claim in incoming_claims.items():
+            chunk = str(chunk)
+            if not isinstance(incoming_claim, dict):
+                continue
 
-    local["in_progress"] -= local["completed"]
+            local_claim = local["claims"].get(chunk)
+
+            if not local_claim:
+                local["claims"][chunk] = incoming_claim
+                continue
+
+            incoming_epoch = incoming_claim.get("epoch", 0)
+            local_epoch = local_claim.get("epoch", 0)
+
+            if incoming_epoch > local_epoch:
+                local["claims"][chunk] = incoming_claim
+            elif (
+                incoming_epoch == local_epoch
+                and incoming_claim.get("timestamp", 0) > local_claim.get("timestamp", 0)
+            ):
+                local["claims"][chunk] = incoming_claim
+
+    for chunk in list(local["completed"]):
+        local["claims"].pop(chunk, None)
 
     if isinstance(incoming.get("chunk_data_map"), dict):
         local["chunk_data_map"].update(incoming["chunk_data_map"])
@@ -669,6 +778,7 @@ async def connect_to_relay():
                         asyncio.create_task(sender_loop())
                         asyncio.create_task(scheduler_loop())
                         asyncio.create_task(cache_maintenance_loop())
+                        asyncio.create_task(claim_cleanup_loop())
                         asyncio.create_task(peer_gossip_loop())
                         asyncio.create_task(verification_timeout_loop())
                         work_loop_started = True
@@ -709,7 +819,17 @@ async def connect_to_relay():
                             job_id = payload.get("job_id")
                             if job_id and is_valid_job_id(job_id):
                                 await asyncio.to_thread(cleanup_job_files, job_id)
+
                                 job_cache.pop(job_id, None)
+                                download_locks.pop(job_id, None)
+
+                                stale_keys = [
+                                    key for key in local_verifications
+                                    if key[0] == job_id
+                                ]
+
+                                for key in stale_keys:
+                                    local_verifications.pop(key, None)                                
 
                         elif msg_type == "direct_message":
                             payload = data.get("payload", {})
@@ -722,8 +842,30 @@ async def connect_to_relay():
                                 if job_id is None or chunk is None:
                                     continue
                                 state = init_job(job_id)
-                                if chunk not in state["completed"]:
-                                    state["in_progress"].add(chunk)
+                                incoming_claim = {
+                                    "owner": payload.get("owner"),
+                                    "timestamp": payload.get("timestamp", 0),
+                                    "epoch": payload.get("epoch", 0)
+                                }
+                                local_claim = state["claims"].get(chunk)
+
+                                accept = False
+                                if not local_claim:
+                                    accept = True
+                                else:
+                                    local_epoch = local_claim.get("epoch", 0)
+                                    incoming_epoch = incoming_claim.get("epoch", 0)
+
+                                    if incoming_epoch > local_epoch:
+                                        accept = True
+                                    elif (
+                                        incoming_epoch == local_epoch
+                                        and incoming_claim["timestamp"] > local_claim.get("timestamp", 0)
+                                    ):
+                                        accept = True
+
+                                if accept and chunk not in state["completed"]:
+                                    state["claims"][chunk] = incoming_claim
                                 state["last_updated"] = time.time()
 
                             elif action == "complete_chunk":
@@ -734,7 +876,7 @@ async def connect_to_relay():
                                 state = init_job(job_id)
                                 if chunk not in state["completed"]:
                                     state["completed"].add(chunk)
-                                    state["in_progress"].discard(chunk)
+                                    state["claims"].pop(chunk, None)
                                     state["last_updated"] = time.time()
 
                             elif action == "verify_chunk":
@@ -779,7 +921,7 @@ async def connect_to_relay():
                                     state = job_cache.get(job_id)
                                     if state and chunk not in state["completed"]:
                                         state["completed"].add(chunk)
-                                        state["in_progress"].discard(chunk)
+                                        state["claims"].pop(chunk, None)
                                         state["last_updated"] = time.time()
                                         await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
 
@@ -820,7 +962,7 @@ async def connect_to_relay():
                                     state = job_cache.get(job_id)
                                     if state:
                                         state["completed"].discard(chunk)
-                                        state["in_progress"].discard(chunk)
+                                        state["claims"].pop(chunk, None)
                                         state["last_updated"] = time.time()
                                         await broadcast_action(
                                                 "chunk_requeue",
@@ -836,6 +978,7 @@ async def connect_to_relay():
                                 if job_id:
                                     state = init_job(job_id)
                                     state["status"] = "completed"
+                                    state["claims"].clear()
                                     state["last_updated"] = time.time()
 
                             elif action == "job_sync":
@@ -851,6 +994,7 @@ async def connect_to_relay():
                                 if job_id:
                                     await asyncio.to_thread(cleanup_job_files, job_id)
                                     job_cache.pop(job_id, None)
+                                    download_locks.pop(job_id, None)
                                     stale_keys = [
                                         key for key in local_verifications
                                         if key[0] == job_id
@@ -882,7 +1026,7 @@ async def connect_to_relay():
                                     continue
 
                                 state["completed"].discard(chunk)
-                                state["in_progress"].discard(chunk)
+                                state["claims"].pop(chunk, None)
                                 state["last_updated"] = time.time()
                                 local_verifications.pop((job_id, chunk), None)
 
