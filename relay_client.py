@@ -5,6 +5,7 @@ import os
 import time
 import random
 import re
+from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
 from node.downloader import download_job
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
@@ -57,6 +58,7 @@ work_loop_started = False
 verify_success_count = 0
 verify_mismatch_count = 0
 verify_timeout_count = 0
+last_relay_warning = 0
 
 active_chunks = 0
 MAX_CONCURRENT_CHUNKS = 2
@@ -187,6 +189,7 @@ def add_peer(peer_id):
     if len(known_peers) >= MAX_PEERS and peer_id not in known_peers:
         return
 
+    is_new_peer = peer_id not in known_peers
     known_peers.add(peer_id)
     if peer_id not in peer_scores:
         peer_scores[peer_id] = {
@@ -194,6 +197,11 @@ def add_peer(peer_id):
             "timeouts": 0,
             "mismatches": 0
         }
+    if is_new_peer:
+        logger.info(
+            f"[Peers] Discovered peer {peer_id} "
+            f"(known_peers={len(known_peers)})"
+        )
 
 
 def remove_stale_peers():
@@ -364,12 +372,24 @@ async def metrics_loop():
             timeout = verify_timeout_count
         async with active_chunks_lock:
             current_active = active_chunks
+        claims = sum(
+            len(state.get("claims", {}))
+            for state in job_cache.values()
+        )
+        queue_depth = send_queue.qsize()
+        verification_rate = (
+            success / max(success + mismatch + timeout, 1)
+        )
 
         logger.info(
             "[Metrics] "
             f"verify_success={success} "
             f"verify_mismatch={mismatch} "
             f"verify_timeout={timeout} "
+            f"verify_rate={verification_rate:.2%} "
+            f"claims={claims} "
+            f"send_queue={queue_depth} "
+            f"relay={current_relay} "
             f"known_peers={len(known_peers)} "
             f"jobs={len(job_cache)} "
             f"active_chunks={current_active}"
@@ -392,13 +412,13 @@ async def execute_verify_chunk(job_id, chunk, target_node):
         return
 
     if str(chunk) in state.get("completed", set()):
-        logger.info(
+        logger.debug(
             f"[VERIFY] Skipping already completed "
             f"chunk {chunk}"
         )
         return
     
-    logger.info(
+    logger.debug(
         f"[VERIFY] Node verifying chunk {chunk} "
         f"for job {job_id}"
     )
@@ -416,7 +436,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
 
         chunk_data = job_cache.get(job_id, {}).get("chunk_data_map", {}).get(str(chunk), {})
         result = await asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data)
-        logger.info(
+        logger.debug(
             f"[VERIFY] Verification complete "
             f"for chunk {chunk} | status={result.get('status')}"
         )
@@ -456,13 +476,13 @@ async def execute_chunk_task(job_id, chunk):
     claim = state.get("claims", {}).get(chunk)
 
     if not claim:
-        logger.info(
+        logger.debug(
             f"[Claims] Lost ownership of chunk {chunk}"
         )
         return
 
     if claim.get("owner") != get_node_id():
-        logger.info(
+        logger.debug(
             f"[Claims] Another node owns chunk {chunk}"
         )
         return
@@ -489,7 +509,7 @@ async def execute_chunk_task(job_id, chunk):
 
     chunk_data = state.get("chunk_data_map", {}).get(str(chunk), {})
 
-    logger.info(f"[EXECUTE] Starting chunk {chunk} for job {job_id}")
+    logger.debug(f"[EXECUTE] Starting chunk {chunk} for job {job_id}")
     async with active_chunks_lock:
         active_chunks += 1
 
@@ -557,7 +577,7 @@ async def execute_chunk_task(job_id, chunk):
     if exec_output.get("status") == "success":
         logger.info(
             f"[EXECUTE] Completed chunk {chunk} "
-            f"for job {job_id} | result={exec_output.get('result')}"
+            f"for job {job_id} | status=success"
         )
         eligible_peers = [
             p for p in known_peers
@@ -746,6 +766,10 @@ async def claim_cleanup_loop():
                     job_id=job_id,
                     chunk=chunk
                 )
+                logger.info(
+                    f"[Recovery] Requeued stale chunk "
+                    f"{chunk} for job {job_id}"
+                )
                 state["last_updated"] = time.time()
 
 
@@ -770,7 +794,7 @@ async def sender_loop():
         try:
             await websocket_connection.send(json.dumps(message))
         except Exception:
-            logger.exception("[Sender] Retry sending failed")
+            logger.warning("[Sender] Retry sending failed")
 
             if retries < MAX_RETRIES:
                 wrapped["retries"] = retries + 1
@@ -836,6 +860,7 @@ async def connect_to_relay():
     global current_relay
     global known_peers
     global verify_success_count, verify_mismatch_count
+    global last_relay_warning
 
     while True:
         node_id = get_node_id()
@@ -855,7 +880,20 @@ async def connect_to_relay():
                     websocket_connection = websocket
                     current_relay = base_url
                     os.environ["RELAY_HTTP_URL"] = base_url
-                    logger.info(f"[Relay] Connected to {base_url} as {node_id}")
+                    if work_loop_started:
+                        logger.info(
+                            f"[Relay] Reconnected to {base_url} as {node_id}"
+                        )
+                    else:
+                        logger.info(
+                            f"[Relay] Connected to {base_url} as {node_id}"
+                        )
+                    logger.info(
+                        f"[System] Nexus node active | "
+                        f"max_chunks={MAX_CONCURRENT_CHUNKS} "
+                        f"claim_timeout={CLAIM_TIMEOUT}s "
+                        f"known_peers={len(known_peers)}"
+                    )
 
                     if not work_loop_started:
                         asyncio.create_task(sender_loop())
@@ -950,7 +988,7 @@ async def connect_to_relay():
 
                                 if accept and chunk not in state["completed"]:
                                     state["claims"][chunk] = incoming_claim
-                                    logger.info(
+                                    logger.debug(
                                         f"[Claims] Accepted claim for chunk {chunk} "
                                         f"job {job_id} owner={incoming_claim['owner']} "
                                         f"epoch={incoming_claim['epoch']}"
@@ -1014,7 +1052,7 @@ async def connect_to_relay():
                                 ):
                                     async with metrics_lock:
                                         verify_success_count += 1
-                                    logger.info(
+                                    logger.debug(
                                         f"[VERIFY] Verified chunk {chunk} "
                                         f"for job {job_id}"
                                     )
@@ -1133,8 +1171,28 @@ async def connect_to_relay():
                                 state["last_updated"] = time.time()
                                 local_verifications.pop((job_id, chunk), None)
 
+            except ws_exceptions.ConnectionClosed:
+                websocket_connection = None
+                if current_relay == base_url:
+                    current_relay = None
+                logger.warning(f"[Relay] Connection closed: {base_url}")
+            except (ws_exceptions.WebSocketException, OSError) as exc:
+                websocket_connection = None
+                if current_relay == base_url:
+                    current_relay = None
+                logger.warning(
+                    f"[Relay] Connection failed: {base_url} | error={exc}"
+                )
             except Exception:
-                logger.exception(f"[Relay] Failed {base_url}")
+                websocket_connection = None
+                if current_relay == base_url:
+                    current_relay = None
+                logger.exception(
+                    f"[Relay] Unexpected relay failure: {base_url}"
+                )
 
-        logger.warning("[Relay] All relays failed. Retrying in 3s...")
+        now = time.time()
+        if now - last_relay_warning > 30:
+            logger.warning("[Relay] All relays failed. Retrying in 3s...")
+            last_relay_warning = now
         await asyncio.sleep(3)
