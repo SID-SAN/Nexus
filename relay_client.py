@@ -11,7 +11,9 @@ from node.executor import execute_chunk, cleanup_job as cleanup_job_files
 from config import RELAY_URLS
 from logger import setup_logger
 
+metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
+active_chunks_lock = asyncio.Lock()
 current_relay = None
 MAX_RETRIES = 5
 download_locks = {}
@@ -52,13 +54,16 @@ job_cache = {}
 local_verifications = {}
 send_queue = asyncio.Queue(maxsize=1000)
 work_loop_started = False
+verify_success_count = 0
+verify_mismatch_count = 0
+verify_timeout_count = 0
 
 active_chunks = 0
 MAX_CONCURRENT_CHUNKS = 2
 CLAIM_JITTER_MAX = 0.2
 FAILED_CHUNK_BACKOFF = 1
 LOCAL_VERIFY_TIMEOUT = 45
-CLAIM_TIMEOUT = 300
+CLAIM_TIMEOUT = 900
 COMPLETED_JOB_TTL = 120
 STALE_JOB_TTL = 3600
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
@@ -105,6 +110,7 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
         "claims": {},
         "status": "running",
         "cleanup_scheduled": False,
+        "cleanup_completed": False,
         "chunk_data_map": {},
         "total_chunks": total_chunks,
         "last_sync": 0,
@@ -291,14 +297,28 @@ async def send_job_sync(job_id):
 
 async def cleanup_job_cache(job_id):
     await asyncio.sleep(60)
-    if job_id in job_cache:
-        await broadcast_action("job_cleanup", job_id=job_id)
+    state = job_cache.get(job_id)
+    if not state:
+        return
+    if state.get("cleanup_completed"):
+        return
+
+    state["cleanup_completed"] = True
+    await broadcast_action("job_cleanup", job_id=job_id)
+    await asyncio.to_thread(cleanup_job_files, job_id)
     job_cache.pop(job_id, None)
     download_locks.pop(job_id, None)
+    stale_keys = [
+        key for key in local_verifications
+        if key[0] == job_id
+    ]
+    for key in stale_keys:
+        local_verifications.pop(key, None)
     logger.info(f"[Cache] Cleaned job {job_id}")
 
 
 async def verification_timeout_loop():
+    global verify_timeout_count
     while True:
         await asyncio.sleep(5)
 
@@ -311,6 +331,8 @@ async def verification_timeout_loop():
 
         for key in expired:
             job_id, chunk = key
+            async with metrics_lock:
+                verify_timeout_count += 1
 
             logger.warning(
                 f"[VERIFY] Verification timeout "
@@ -330,6 +352,28 @@ async def verification_timeout_loop():
                 )
 
             local_verifications.pop(key, None)
+
+
+async def metrics_loop():
+    while True:
+        await asyncio.sleep(30)
+
+        async with metrics_lock:
+            success = verify_success_count
+            mismatch = verify_mismatch_count
+            timeout = verify_timeout_count
+        async with active_chunks_lock:
+            current_active = active_chunks
+
+        logger.info(
+            "[Metrics] "
+            f"verify_success={success} "
+            f"verify_mismatch={mismatch} "
+            f"verify_timeout={timeout} "
+            f"known_peers={len(known_peers)} "
+            f"jobs={len(job_cache)} "
+            f"active_chunks={current_active}"
+        )
 
 
 async def execute_verify_chunk(job_id, chunk, target_node):
@@ -364,7 +408,6 @@ async def execute_verify_chunk(job_id, chunk, target_node):
             raise ValueError("Invalid job_id")
 
         jobs_base = os.path.abspath("jobs")
-        zip_path = os.path.join(jobs_base, f"{job_id}.zip")
         extract_path = os.path.join(jobs_base, str(job_id))
         lock = get_download_lock(job_id)
         async with lock:
@@ -431,7 +474,6 @@ async def execute_chunk_task(job_id, chunk):
             raise ValueError("Invalid job_id")
 
         jobs_base = os.path.abspath("jobs")
-        zip_path = os.path.join(jobs_base, f"{job_id}.zip")
         extract_path = os.path.join(jobs_base, str(job_id))
         lock = get_download_lock(job_id)
         async with lock:
@@ -440,7 +482,7 @@ async def execute_chunk_task(job_id, chunk):
                     await asyncio.to_thread(download_job, job_id)
                 except FileExistsError:
                     pass
-    except Exception as e:
+    except Exception:
         logger.exception("[Node] Download failed")
         state["claims"].pop(chunk, None)
         return
@@ -448,7 +490,28 @@ async def execute_chunk_task(job_id, chunk):
     chunk_data = state.get("chunk_data_map", {}).get(str(chunk), {})
 
     logger.info(f"[EXECUTE] Starting chunk {chunk} for job {job_id}")
-    active_chunks += 1
+    async with active_chunks_lock:
+        active_chunks += 1
+
+    async def refresh_claim():
+        while True:
+            await asyncio.sleep(30)
+
+            current_state = job_cache.get(job_id)
+            if not current_state:
+                return
+
+            current_claim = current_state.get("claims", {}).get(chunk)
+            if not current_claim:
+                return
+
+            if current_claim.get("owner") != get_node_id():
+                return
+
+            current_claim["timestamp"] = time.time()
+            current_state["last_updated"] = time.time()
+
+    heartbeat_task = asyncio.create_task(refresh_claim())
     try:
         exec_output = await asyncio.wait_for(
             asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data),
@@ -467,7 +530,13 @@ async def execute_chunk_task(job_id, chunk):
             **error_response(str(e), "CHUNK_EXECUTION_ERROR"),
         }
     finally:
-        active_chunks -= 1
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        async with active_chunks_lock:
+            active_chunks -= 1
 
     state = job_cache.get(job_id)
 
@@ -479,7 +548,9 @@ async def execute_chunk_task(job_id, chunk):
     if latest_claim and latest_claim.get("owner") != get_node_id():
         logger.warning(
             f"[Claims] Lost ownership during execution "
-            f"of chunk {chunk}"
+            f"chunk={chunk} "
+            f"owner={latest_claim.get('owner')} "
+            f"epoch={latest_claim.get('epoch')}"
         )
         return
 
@@ -573,7 +644,9 @@ async def scheduler_loop():
             await asyncio.sleep(1)
             continue
 
-        if active_chunks >= MAX_CONCURRENT_CHUNKS:
+        async with active_chunks_lock:
+            current_active = active_chunks
+        if current_active >= MAX_CONCURRENT_CHUNKS:
             await asyncio.sleep(1)
             continue
 
@@ -637,6 +710,14 @@ async def cache_maintenance_loop():
                 to_remove.append(job_id)
 
         for job_id in to_remove:
+            await asyncio.to_thread(cleanup_job_files, job_id)
+            download_locks.pop(job_id, None)
+            stale_keys = [
+                key for key in local_verifications
+                if key[0] == job_id
+            ]
+            for key in stale_keys:
+                local_verifications.pop(key, None)
             job_cache.pop(job_id, None)
             logger.info(f"[Cache] Pruned stale job {job_id}")
 
@@ -649,7 +730,7 @@ async def claim_cleanup_loop():
         for job_id, state in list(job_cache.items()):
             stale = []
 
-            for chunk, claim in state.get("claims", {}).items():
+            for chunk, claim in list(state.get("claims", {}).items()):
                 if now - claim.get("timestamp", 0) > CLAIM_TIMEOUT:
                     stale.append(chunk)
 
@@ -659,6 +740,7 @@ async def claim_cleanup_loop():
                     f"{chunk} for job {job_id}"
                 )
                 state["claims"].pop(chunk, None)
+                local_verifications.pop((job_id, chunk), None)
                 await broadcast_action(
                     "chunk_requeue",
                     job_id=job_id,
@@ -687,7 +769,7 @@ async def sender_loop():
 
         try:
             await websocket_connection.send(json.dumps(message))
-        except Exception as e:
+        except Exception:
             logger.exception("[Sender] Retry sending failed")
 
             if retries < MAX_RETRIES:
@@ -753,6 +835,7 @@ async def connect_to_relay():
     global work_loop_started
     global current_relay
     global known_peers
+    global verify_success_count, verify_mismatch_count
 
     while True:
         node_id = get_node_id()
@@ -781,6 +864,7 @@ async def connect_to_relay():
                         asyncio.create_task(claim_cleanup_loop())
                         asyncio.create_task(peer_gossip_loop())
                         asyncio.create_task(verification_timeout_loop())
+                        asyncio.create_task(metrics_loop())
                         work_loop_started = True
 
                     while True:
@@ -866,6 +950,16 @@ async def connect_to_relay():
 
                                 if accept and chunk not in state["completed"]:
                                     state["claims"][chunk] = incoming_claim
+                                    logger.info(
+                                        f"[Claims] Accepted claim for chunk {chunk} "
+                                        f"job {job_id} owner={incoming_claim['owner']} "
+                                        f"epoch={incoming_claim['epoch']}"
+                                    )
+                                else:
+                                    logger.debug(
+                                        f"[Claims] Rejected stale claim for chunk {chunk} "
+                                        f"job {job_id}"
+                                    )
                                 state["last_updated"] = time.time()
 
                             elif action == "complete_chunk":
@@ -878,6 +972,11 @@ async def connect_to_relay():
                                     state["completed"].add(chunk)
                                     state["claims"].pop(chunk, None)
                                     state["last_updated"] = time.time()
+                                else:
+                                    logger.warning(
+                                        f"[Consistency] Duplicate completion "
+                                        f"job={job_id} chunk={chunk}"
+                                    )
 
                             elif action == "verify_chunk":
                                 job_id = payload.get("job_id")
@@ -913,6 +1012,8 @@ async def connect_to_relay():
                                     payload.get("status") == "success"
                                     and original_result == verify_result
                                 ):
+                                    async with metrics_lock:
+                                        verify_success_count += 1
                                     logger.info(
                                         f"[VERIFY] Verified chunk {chunk} "
                                         f"for job {job_id}"
@@ -954,6 +1055,8 @@ async def connect_to_relay():
                                                 state["cleanup_scheduled"] = True
                                                 asyncio.create_task(cleanup_job_cache(job_id))
                                 else:
+                                    async with metrics_lock:
+                                        verify_mismatch_count += 1
                                     logger.warning(
                                         f"[VERIFY] Mismatch for chunk {chunk} "
                                         f"job {job_id}"
@@ -1030,7 +1133,7 @@ async def connect_to_relay():
                                 state["last_updated"] = time.time()
                                 local_verifications.pop((job_id, chunk), None)
 
-            except Exception as e:
+            except Exception:
                 logger.exception(f"[Relay] Failed {base_url}")
 
         logger.warning("[Relay] All relays failed. Retrying in 3s...")
