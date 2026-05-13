@@ -35,6 +35,7 @@ JOB_DIR_ABS = os.path.abspath(JOB_DIR)
 connected_nodes = {}
 node_resources = {}
 node_last_seen = {}
+node_runtime = {}
 node_stats = {}
 jobs = load_jobs()
 node_owner_map = {}
@@ -43,6 +44,9 @@ save_lock = asyncio.Lock()
 jobs_dirty = False
 last_peer_list = set()
 reward_lock = asyncio.Lock()
+claim_recovery_count = 0
+duplicate_completion_count = 0
+verification_mismatch_count = 0
 
 
 # -----------------------------
@@ -52,6 +56,29 @@ MAX_RETRIES = 3
 CHUNK_TIMEOUT = 60
 NODE_TIMEOUT = 60
 VERIFY_TIMEOUT = 20
+HEARTBEAT_STALE_SECONDS = 25
+
+
+def ensure_job_runtime_fields(job):
+    claims = job.get("claims")
+    if not isinstance(claims, dict):
+        job["claims"] = {}
+
+    recovery_count = job.get("recovery_count")
+    if not isinstance(recovery_count, int):
+        job["recovery_count"] = 0
+
+    mismatch_count = job.get("mismatch_count")
+    if not isinstance(mismatch_count, int):
+        job["mismatch_count"] = 0
+
+    duplicate_count = job.get("duplicate_completion_count")
+    if not isinstance(duplicate_count, int):
+        job["duplicate_completion_count"] = 0
+
+
+for _job in jobs.values():
+    ensure_job_runtime_fields(_job)
 
 
 # -----------------------------
@@ -141,6 +168,177 @@ async def periodic_save():
             jobs_dirty = False
 
 
+def mark_node_disconnected(node_id, websocket=None):
+    current_ws = connected_nodes.get(node_id)
+    if websocket is not None and current_ws is not None and current_ws is not websocket:
+        return
+
+    connected_nodes.pop(node_id, None)
+    node_resources.pop(node_id, None)
+    node_last_seen.pop(node_id, None)
+
+    snapshot = node_runtime.setdefault(node_id, {})
+    snapshot["status"] = "DISCONNECTED"
+    snapshot["active_chunks"] = 0
+    snapshot["known_peers"] = snapshot.get("known_peers", 0)
+    snapshot["relay"] = snapshot.get("relay")
+    snapshot["last_seen"] = time.time()
+
+
+def update_node_runtime_from_heartbeat(node_id, payload):
+    if not isinstance(payload, dict):
+        payload = {}
+
+    allowed_states = {
+        "IDLE",
+        "EXECUTING",
+        "VERIFYING",
+        "RECOVERING",
+        "DISCONNECTED"
+    }
+    status = str(payload.get("status", "IDLE")).upper()
+    if status not in allowed_states:
+        status = "IDLE"
+
+    try:
+        active_chunks = int(payload.get("active_chunks", 0))
+    except (TypeError, ValueError):
+        active_chunks = 0
+
+    try:
+        known_peers = int(payload.get("known_peers", 0))
+    except (TypeError, ValueError):
+        known_peers = 0
+
+    snapshot = node_runtime.setdefault(node_id, {})
+    snapshot["status"] = status
+    snapshot["active_chunks"] = max(active_chunks, 0)
+    snapshot["known_peers"] = max(known_peers, 0)
+    snapshot["relay"] = payload.get("relay")
+    snapshot["last_seen"] = time.time()
+
+
+def sync_claim_from_direct_action(source_node_id, payload):
+    global claim_recovery_count
+
+    if not isinstance(payload, dict):
+        return
+
+    action = payload.get("action")
+    job_id = payload.get("job_id")
+    if not action or not job_id:
+        return
+
+    job = jobs.get(job_id)
+    if not job:
+        return
+
+    ensure_job_runtime_fields(job)
+    claims = job.setdefault("claims", {})
+    chunk = payload.get("chunk")
+    chunk_key = str(chunk) if chunk is not None else None
+
+    if action == "claim_chunk":
+        if chunk_key is None:
+            return
+
+        incoming = {
+            "owner": payload.get("owner") or source_node_id,
+            "timestamp": payload.get("timestamp", time.time()),
+            "epoch": payload.get("epoch", 0)
+        }
+
+        local_claim = claims.get(chunk_key)
+        if not isinstance(local_claim, dict):
+            claims[chunk_key] = incoming
+            return
+
+        incoming_epoch = incoming.get("epoch", 0)
+        local_epoch = local_claim.get("epoch", 0)
+        incoming_ts = incoming.get("timestamp", 0)
+        local_ts = local_claim.get("timestamp", 0)
+
+        if incoming_epoch > local_epoch or (
+            incoming_epoch == local_epoch and incoming_ts >= local_ts
+        ):
+            claims[chunk_key] = incoming
+        return
+
+    if action == "complete_chunk":
+        if chunk_key is not None:
+            claims.pop(chunk_key, None)
+        return
+
+    if action == "chunk_requeue":
+        if chunk_key is not None:
+            claims.pop(chunk_key, None)
+            claim_recovery_count += 1
+            job["recovery_count"] = job.get("recovery_count", 0) + 1
+        return
+
+    if action == "job_complete":
+        claims.clear()
+        return
+
+    if action == "job_sync":
+        status = payload.get("status", {})
+        if not isinstance(status, dict):
+            return
+
+        incoming_claims = status.get("claims", {})
+        if not isinstance(incoming_claims, dict):
+            return
+
+        for incoming_chunk, incoming_claim in incoming_claims.items():
+            if not isinstance(incoming_claim, dict):
+                continue
+            claims[str(incoming_chunk)] = incoming_claim
+
+        completed_chunks = status.get("completed", [])
+        if isinstance(completed_chunks, list):
+            for completed_chunk in completed_chunks:
+                claims.pop(str(completed_chunk), None)
+
+
+def build_node_snapshot():
+    now = time.time()
+    all_node_ids = set(node_runtime.keys()) | set(connected_nodes.keys())
+    snapshots = []
+
+    for node_id in sorted(all_node_ids):
+        runtime = node_runtime.get(node_id, {})
+        is_connected = node_id in connected_nodes
+
+        status = runtime.get("status", "IDLE")
+        if not is_connected and status != "DISCONNECTED":
+            status = "DISCONNECTED"
+
+        last_seen = runtime.get("last_seen")
+        if not isinstance(last_seen, (int, float)):
+            last_seen = node_last_seen.get(node_id, now)
+
+        last_seen_age = max(0, int(now - last_seen))
+        active_chunks = int(runtime.get("active_chunks", 0) or 0)
+        if last_seen_age > HEARTBEAT_STALE_SECONDS:
+            active_chunks = 0
+
+        resource = node_resources.get(node_id, {})
+        snapshots.append({
+            "id": node_id,
+            "status": status,
+            "active_chunks": active_chunks,
+            "known_peers": int(runtime.get("known_peers", 0) or 0),
+            "relay": runtime.get("relay"),
+            "last_seen": last_seen,
+            "last_seen_age": last_seen_age,
+            "cpu": resource.get("cpu", 0),
+            "ram": resource.get("ram", 0),
+            "connected": is_connected,
+        })
+
+    return snapshots
+
+
 # -----------------------------
 # SAFE SEND
 # -----------------------------
@@ -151,9 +349,7 @@ async def safe_send(ws, message, node_id=None):
     except Exception as e:
         if node_id:
             logger.warning(f"[Relay] Removing dead node {node_id}: {e}")
-            connected_nodes.pop(node_id, None)
-            node_resources.pop(node_id, None)
-            node_last_seen.pop(node_id, None)
+            mark_node_disconnected(node_id, ws)
 
 
 async def send_cleanup_job(job_id, job):
@@ -185,9 +381,7 @@ async def heartbeat_loop():
             # 🔥 remove stale nodes
             if now - last_seen > NODE_TIMEOUT:
                 logger.info(f"[Relay] Removing stale node {node_id}")
-                connected_nodes.pop(node_id, None)
-                node_resources.pop(node_id, None)
-                node_last_seen.pop(node_id, None)
+                mark_node_disconnected(node_id, ws)
                 continue
 
             await safe_send(ws, {"type": "heartbeat"}, node_id)
@@ -223,6 +417,7 @@ async def monitor_jobs():
         await asyncio.sleep(5)
 
         for job_id, job in jobs.items():
+            ensure_job_runtime_fields(job)
 
             if job["status"] != "running":
                 continue
@@ -257,6 +452,7 @@ async def monitor_jobs():
                             job["results"][chunk] = val
 
                             job["status_map"][chunk] = "completed"
+                            job.setdefault("claims", {}).pop(chunk, None)
 
                             price = job.get("price", 0)
                             rewarded_chunks = job.setdefault("rewarded_chunks", set())
@@ -309,6 +505,7 @@ async def monitor_jobs():
 
                         job["status_map"][chunk] = "pending"
                         job["retries"][chunk] = retries + 1
+                        job.setdefault("claims", {}).pop(chunk, None)
 
                         job.get("verifications", {}).pop(chunk, None)
                         job.get("verify_requests", {}).pop(chunk, None)
@@ -323,6 +520,7 @@ async def monitor_jobs():
 
                         job["status_map"][chunk] = "failed"
                         job["errors"][chunk] = "Max retries exceeded"
+                        job.setdefault("claims", {}).pop(chunk, None)
 
             # 🔥 FORCE COMPLETION CHECK (CRITICAL FIX)
             # 🔥 convert stuck running -> completed if result exists
@@ -349,6 +547,7 @@ async def monitor_jobs():
                 job["status"] = "completed"
                 job["final_result"] = compute_final_result(job)
                 job["completed_at"] = time.time()
+                job.setdefault("claims", {}).clear()
                 await send_cleanup_job(job_id, job)
 
 
@@ -640,22 +839,58 @@ def get_resources():
 
 @app.get("/cluster_status")
 def cluster_status():
-
-    nodes = []
-
-    for node_id in connected_nodes.keys():
-        stats = node_resources.get(node_id, {})
-
-        nodes.append({
-            "id": node_id,
-            "cpu": stats.get("cpu", 0),
-            "ram": stats.get("ram", 0)
-        })
+    node_rows = build_node_snapshot()
+    connected_rows = [n for n in node_rows if n.get("connected")]
 
     return {
-        "connected_nodes": nodes,
+        "connected_nodes": connected_rows,
         "resources": node_resources,
         "active_jobs": list(jobs.keys())
+    }
+
+
+@app.get("/cluster_metrics")
+def cluster_metrics():
+    node_rows = build_node_snapshot()
+    connected_rows = [n for n in node_rows if n.get("connected")]
+
+    running_jobs = [
+        job for job in jobs.values()
+        if job.get("status") == "running"
+    ]
+
+    active_claims = 0
+    pending_chunks = 0
+    for job in jobs.values():
+        ensure_job_runtime_fields(job)
+        active_claims += len(job.get("claims", {}))
+        if job.get("status") == "running":
+            pending_chunks += len(job.get("queue", []))
+
+    active_chunks = sum(
+        max(0, int(node.get("active_chunks", 0) or 0))
+        for node in connected_rows
+    )
+
+    verify_success = sum(stats.get("success", 0) for stats in node_stats.values())
+    verify_timeout = sum(stats.get("timeouts", 0) for stats in node_stats.values())
+    verify_attempts = verify_success + verification_mismatch_count + verify_timeout
+    verification_success_rate = round(
+        (verify_success / verify_attempts) * 100,
+        2
+    ) if verify_attempts > 0 else 100.0
+
+    return {
+        "connected_nodes": len(connected_rows),
+        "active_jobs": len(running_jobs),
+        "active_claims": active_claims,
+        "active_chunks": active_chunks,
+        "verification_success_rate": verification_success_rate,
+        "verification_mismatches": verification_mismatch_count,
+        "pending_chunks": pending_chunks,
+        "claim_recovery_count": claim_recovery_count,
+        "duplicate_completion_count": duplicate_completion_count,
+        "nodes": node_rows
     }
 
 
@@ -736,10 +971,14 @@ async def submit_job(
         "rewarded_chunks": set(),
         "logs": {},
         "errors": {},
+        "claims": {},
         "status_map": {},
         "assigned_at": {},
         "retries": {},
         "retry_count": {},
+        "recovery_count": 0,
+        "duplicate_completion_count": 0,
+        "mismatch_count": 0,
         "status": "running",
         "final_result": None,
         "reducer": reducer,
@@ -761,6 +1000,7 @@ async def submit_job(
 # -----------------------------
 @app.websocket("/ws/{node_id}")
 async def websocket_endpoint(websocket: WebSocket, node_id: str):
+    global duplicate_completion_count, verification_mismatch_count
 
 
     api_key = websocket.query_params.get("api_key")
@@ -780,7 +1020,15 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     
     # continue normal flow
     connected_nodes[node_id] = websocket
-    node_last_seen[node_id] = time.time()
+    now = time.time()
+    node_last_seen[node_id] = now
+    node_runtime[node_id] = {
+        "last_seen": now,
+        "status": "IDLE",
+        "active_chunks": 0,
+        "known_peers": 0,
+        "relay": None
+    }
 
     logger.info(f"Node connected: {node_id}")
     for jid, job in jobs.items():
@@ -808,7 +1056,13 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             msg_type = message.get("type")
 
-            if msg_type == "resource_update":
+            if msg_type == "heartbeat_ack":
+                update_node_runtime_from_heartbeat(
+                    node_id,
+                    message.get("payload", {})
+                )
+
+            elif msg_type == "resource_update":
                 payload = message.get("payload", {})
 
                 if not isinstance(payload, dict):
@@ -833,6 +1087,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
 
             elif msg_type == "direct_message":
                 payload = message.get("payload", {})
+                sync_claim_from_direct_action(node_id, payload)
                 target = payload.get("target")
 
                 if not target:
@@ -865,10 +1120,19 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job = jobs.get(job_id)
                 if not job or job["status"] == "cancelled":
                     continue
+                ensure_job_runtime_fields(job)
 
                 if job["status_map"].get(chunk_key) == "completed":
+                    duplicate_completion_count += 1
+                    job["duplicate_completion_count"] = (
+                        job.get("duplicate_completion_count", 0) + 1
+                    )
                     continue
                 if job["status_map"].get(chunk_key) == "failed":
+                    duplicate_completion_count += 1
+                    job["duplicate_completion_count"] = (
+                        job.get("duplicate_completion_count", 0) + 1
+                    )
                     continue
 
                 if status == "success":
@@ -877,12 +1141,14 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         completed_chunks = set(completed_chunks)
                         job["completed_chunks"] = completed_chunks
                     completed_chunks.add(chunk_key)
+                    job.setdefault("claims", {}).pop(chunk_key, None)
 
                     total_chunks = job.get("total_chunks", job.get("chunks", 0))
 
                 if status == "failed":
                     stats = get_node_stats(node_id)
                     stats["failures"] += 1
+                    job.setdefault("claims", {}).pop(chunk_key, None)
 
                     failed_nodes_map = job.setdefault("failed_nodes", {})
                     failed_node_set = failed_nodes_map.setdefault(chunk_key, set())
@@ -948,6 +1214,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job["status"] = "completed"
                         job["final_result"] = compute_final_result(job)
                         job["completed_at"] = time.time()
+                        job.setdefault("claims", {}).clear()
                         await send_cleanup_job(job_id, job)
 
                     await mark_jobs_dirty()
@@ -1039,10 +1306,19 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                 job = jobs.get(job_id)
                 if not job or job["status"] == "cancelled":
                     continue
+                ensure_job_runtime_fields(job)
 
                 if job["status_map"].get(chunk_key) == "completed":
+                    duplicate_completion_count += 1
+                    job["duplicate_completion_count"] = (
+                        job.get("duplicate_completion_count", 0) + 1
+                    )
                     continue
                 if job["status_map"].get(chunk_key) == "failed":
+                    duplicate_completion_count += 1
+                    job["duplicate_completion_count"] = (
+                        job.get("duplicate_completion_count", 0) + 1
+                    )
                     continue
 
                 originals = job.get("verification_originals", {})
@@ -1084,6 +1360,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     logger.info(f"[DEBUG] STORED RESULT → chunk {chunk_key}: {final_val}")
 
                     job["status_map"][chunk_key] = "completed"
+                    job.setdefault("claims", {}).pop(chunk_key, None)
                     job.get("retry_count", {}).pop(chunk_key, None)
 
                     price = job.get("price", 0)
@@ -1165,6 +1442,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                         job["logs"][chunk_key] += f"\n[VERIFY]\n{verify_logs}"
                     job["errors"][chunk_key] = payload.get("error", "")
                 else:
+                    verification_mismatch_count += 1
                     stats = get_node_stats(node_id)
                     stats["mismatches"] += 1
 
@@ -1176,6 +1454,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     if retry_map[chunk_key] > MAX_RETRIES:
                         logger.error(f"[Verify] Chunk {chunk_key} failed permanently")
                         job["status_map"][chunk_key] = "failed"
+                        job.setdefault("claims", {}).pop(chunk_key, None)
                         async with job["_queue_lock"]:
                             job["queue"] = [c for c in job["queue"] if c != chunk_key]
                         job.get("verifications", {}).pop(chunk_key, None)
@@ -1194,6 +1473,7 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                                 job["queue"].append(chunk_key)
 
                         job["status_map"][chunk_key] = "pending"
+                        job.setdefault("claims", {}).pop(chunk_key, None)
 
                 job["updated_at"] = time.time()
 
@@ -1214,15 +1494,16 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
                     job["status"] = "completed"
                     job["final_result"] = compute_final_result(job)
                     job["completed_at"] = time.time()
+                    job.setdefault("claims", {}).clear()
                     await send_cleanup_job(job_id, job)
 
                 await mark_jobs_dirty()
 
     except WebSocketDisconnect:
         logger.info(f"Node disconnected: {node_id}")
-        connected_nodes.pop(node_id, None)
-        node_resources.pop(node_id, None)
-        node_last_seen.pop(node_id, None)
+        mark_node_disconnected(node_id, websocket)
+    finally:
+        mark_node_disconnected(node_id, websocket)
 
 
 # -----------------------------
@@ -1277,9 +1558,11 @@ def all_jobs(api_key: str):
     for jid, job in jobs.items():
         if job.get("owner") != user_id:
             continue
+        ensure_job_runtime_fields(job)
 
         completed = get_completed_count(job)
         total = job.get("total_chunks", job["chunks"])
+        progress_pct = round((completed / max(total, 1)) * 100, 2)
 
         end_time = job.get("completed_at", now)
         duration = int(end_time - job.get("created_at", now))
@@ -1297,7 +1580,12 @@ def all_jobs(api_key: str):
             "total": total,
             "result": None,
             "duration": duration,
-            "speed": speed
+            "speed": speed,
+            "execution_progress": progress_pct,
+            "active_claims": len(job.get("claims", {})),
+            "recovery_count": job.get("recovery_count", 0),
+            "verification_mismatches": job.get("mismatch_count", 0),
+            "duplicate_completion_count": job.get("duplicate_completion_count", 0)
         }
         if job["status"] == "completed":
             final_result = job.get("final_result")
@@ -1365,6 +1653,7 @@ async def cancel_job(job_id: str, api_key: str):
 
     async with job["_queue_lock"]:
         job["queue"].clear()
+    job.setdefault("claims", {}).clear()
 
     for chunk, status in job["status_map"].items():
         if status == "running" and chunk not in job.get("verify_requests", {}):
