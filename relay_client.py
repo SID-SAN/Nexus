@@ -15,12 +15,16 @@ from logger import setup_logger
 metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
 active_chunks_lock = asyncio.Lock()
+runtime_state_lock = asyncio.Lock()
 current_relay = None
-node_runtime_state = "IDLE"
+executing_tasks = 0
+verifying_tasks = 0
+recovering_tasks = 0
 MAX_RETRIES = 5
 download_locks = {}
-logger = setup_logger("node-client")
+relay_connected = False
 
+logger = setup_logger("node-client")
 
 def get_node_id():
     return os.getenv("NODE_ID", "node_default")
@@ -71,6 +75,23 @@ COMPLETED_JOB_TTL = 120
 STALE_JOB_TTL = 3600
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 
+async def get_runtime_state():
+
+    if not relay_connected:
+        return "DISCONNECTED"
+
+    async with runtime_state_lock:
+
+        if recovering_tasks > 0:
+            return "RECOVERING"
+
+        if verifying_tasks > 0:
+            return "VERIFYING"
+
+        if executing_tasks > 0:
+            return "EXECUTING"
+
+        return "IDLE"
 
 def error_response(message, code="ERROR"):
     return {
@@ -98,11 +119,13 @@ async def enqueue_runtime_snapshot():
     async with active_chunks_lock:
         current_active = active_chunks
 
+    runtime_state = await get_runtime_state()
+
     await enqueue_message({
         "type": "heartbeat_ack",
         "source": get_node_id(),
         "payload": {
-            "status": node_runtime_state,
+            "status": runtime_state,
             "active_chunks": current_active,
             "known_peers": len(known_peers),
             "relay": current_relay
@@ -393,9 +416,13 @@ async def metrics_loop():
             len(state.get("claims", {}))
             for state in job_cache.values()
         )
-        pending_chunks = send_queue.qsize()
+        send_queue_depth = send_queue.qsize()
+
+        attempts = success + mismatch + timeout
         verification_rate = (
-            success / max(success + mismatch + timeout, 1)
+            success / attempts
+            if attempts > 0
+            else 0
         )
 
         logger.info(
@@ -405,7 +432,7 @@ async def metrics_loop():
             f"verify_timeout={timeout} "
             f"verify_rate={verification_rate:.2%} "
             f"claims={claims} "
-            f"send_queue={pending_chunks} "
+            f"send_queue={send_queue_depth} "
             f"relay={current_relay} "
             f"known_peers={len(known_peers)} "
             f"jobs={len(job_cache)} "
@@ -414,7 +441,7 @@ async def metrics_loop():
 
 
 async def execute_verify_chunk(job_id, chunk, target_node):
-    global node_runtime_state
+    global verifying_tasks
     state = job_cache.get(job_id)
 
     if not state:
@@ -436,11 +463,12 @@ async def execute_verify_chunk(job_id, chunk, target_node):
         )
         return
     
+    async with runtime_state_lock:
+        verifying_tasks += 1
     logger.debug(
         f"[VERIFY] Node verifying chunk {chunk} "
         f"for job {job_id}"
     )
-    node_runtime_state = "VERIFYING"
     await enqueue_runtime_snapshot()
 
     try:
@@ -476,12 +504,12 @@ async def execute_verify_chunk(job_id, chunk, target_node):
             **error_response(str(e), "VERIFY_EXECUTION_ERROR"),
         }
     finally:
-        async with active_chunks_lock:
-            if active_chunks > 0:
-                node_runtime_state = "EXECUTING"
-            else:
-                node_runtime_state = "IDLE"
         await enqueue_runtime_snapshot()
+        async with runtime_state_lock:
+            verifying_tasks -= 1
+
+            if verifying_tasks < 0:
+                verifying_tasks = 0
 
     await enqueue_message({
         "type": "direct_message",
@@ -494,7 +522,8 @@ async def execute_verify_chunk(job_id, chunk, target_node):
 
 
 async def execute_chunk_task(job_id, chunk):
-    global active_chunks, node_runtime_state
+    global active_chunks
+    global executing_tasks
     state = job_cache.get(job_id)
 
     if not state:
@@ -536,8 +565,9 @@ async def execute_chunk_task(job_id, chunk):
 
     chunk_data = state.get("chunk_data_map", {}).get(str(chunk), {})
 
+    async with runtime_state_lock:
+        executing_tasks += 1
     logger.debug(f"[EXECUTE] Starting chunk {chunk} for job {job_id}")
-    node_runtime_state = "EXECUTING"
     async with active_chunks_lock:
         active_chunks += 1
     await enqueue_runtime_snapshot()
@@ -586,9 +616,15 @@ async def execute_chunk_task(job_id, chunk):
             pass
         async with active_chunks_lock:
             active_chunks -= 1
-            if active_chunks <= 0:
+
+            if active_chunks < 0:
                 active_chunks = 0
-                node_runtime_state = "IDLE"
+
+        async with runtime_state_lock:
+            executing_tasks -= 1
+
+            if executing_tasks < 0:
+                executing_tasks = 0
         await enqueue_runtime_snapshot()
 
     state = job_cache.get(job_id)
@@ -776,7 +812,7 @@ async def cache_maintenance_loop():
 
 
 async def claim_cleanup_loop():
-    global node_runtime_state
+    global recovering_tasks
     while True:
         await asyncio.sleep(10)
         now = time.time()
@@ -791,9 +827,13 @@ async def claim_cleanup_loop():
 
             for chunk in stale:
                 if not is_recovering:
-                    node_runtime_state = "RECOVERING"
                     is_recovering = True
+
+                    async with runtime_state_lock:
+                        recovering_tasks += 1
+
                     await enqueue_runtime_snapshot()
+
                 logger.warning(
                     f"[Claims] Expired stale claim "
                     f"{chunk} for job {job_id}"
@@ -812,11 +852,14 @@ async def claim_cleanup_loop():
                 state["last_updated"] = time.time()
 
         if is_recovering:
-            async with active_chunks_lock:
-                if active_chunks > 0:
-                    node_runtime_state = "EXECUTING"
-                else:
-                    node_runtime_state = "IDLE"
+
+            await enqueue_runtime_snapshot()
+
+            async with runtime_state_lock:
+                recovering_tasks -= 1
+
+                if recovering_tasks < 0:
+                    recovering_tasks = 0
             await enqueue_runtime_snapshot()
 
 
@@ -908,7 +951,7 @@ async def connect_to_relay():
     global known_peers
     global verify_success_count, verify_mismatch_count
     global last_relay_warning
-    global node_runtime_state
+    global relay_connected
 
     while True:
         node_id = get_node_id()
@@ -927,7 +970,7 @@ async def connect_to_relay():
                 async with websockets.connect(relay_url, ping_interval=20, ping_timeout=20) as websocket:
                     websocket_connection = websocket
                     current_relay = base_url
-                    node_runtime_state = "IDLE"
+                    relay_connected = True
                     os.environ["RELAY_HTTP_URL"] = base_url
                     if work_loop_started:
                         logger.info(
@@ -1223,13 +1266,13 @@ async def connect_to_relay():
                 websocket_connection = None
                 if current_relay == base_url:
                     current_relay = None
-                node_runtime_state = "DISCONNECTED"
+                relay_connected = False
                 logger.warning(f"[Relay] Connection closed: {base_url}")
             except (ws_exceptions.WebSocketException, OSError) as exc:
                 websocket_connection = None
                 if current_relay == base_url:
                     current_relay = None
-                node_runtime_state = "DISCONNECTED"
+                relay_connected = False
                 logger.warning(
                     f"[Relay] Connection failed: {base_url} | error={exc}"
                 )
@@ -1237,13 +1280,13 @@ async def connect_to_relay():
                 websocket_connection = None
                 if current_relay == base_url:
                     current_relay = None
-                node_runtime_state = "DISCONNECTED"
+                relay_connected = False
                 logger.exception(
                     f"[Relay] Unexpected relay failure: {base_url}"
                 )
 
         now = time.time()
-        node_runtime_state = "DISCONNECTED"
+        relay_connected = False
         if now - last_relay_warning > 30:
             logger.warning("[Relay] All relays failed. Retrying in 3s...")
             last_relay_warning = now
