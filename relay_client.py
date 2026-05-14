@@ -22,7 +22,9 @@ verifying_tasks = 0
 recovering_tasks = 0
 MAX_RETRIES = 5
 download_locks = {}
+owned_claims = {}
 relay_connected = False
+startup_recovery_done = False
 
 logger = setup_logger("node-client")
 
@@ -74,6 +76,218 @@ CLAIM_TIMEOUT = 900
 COMPLETED_JOB_TTL = 120
 STALE_JOB_TTL = 3600
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
+
+LOCAL_CLAIMS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "node",
+    "runtime_state",
+    "claims.json",
+)
+
+LOCAL_VERIFICATIONS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "node",
+    "runtime_state",
+    "verifications.json",
+)
+
+
+def _serialize_local_verifications():
+    serialized = []
+    for (job_id, chunk), verification in local_verifications.items():
+        if not isinstance(verification, dict):
+            continue
+        serialized.append({
+            "job_id": str(job_id),
+            "chunk": str(chunk),
+            "verifier": verification.get("verifier"),
+            "original_result": verification.get("original_result"),
+            "timestamp": verification.get("timestamp", time.time()),
+            "logs": verification.get("logs", ""),
+        })
+    return serialized
+
+def _serialize_owned_claims():
+    serialized = []
+
+    for (job_id, chunk), claim in owned_claims.items():
+
+        if not isinstance(claim, dict):
+            continue
+
+        serialized.append({
+            "job_id": str(job_id),
+            "chunk": str(chunk),
+            "timestamp": claim.get("timestamp", time.time()),
+            "epoch": claim.get("epoch", 0),
+        })
+
+    return serialized
+
+def save_local_verifications():
+    os.makedirs(os.path.dirname(LOCAL_VERIFICATIONS_FILE), exist_ok=True)
+    payload = {"verifications": _serialize_local_verifications()}
+    temp_path = f"{LOCAL_VERIFICATIONS_FILE}.tmp"
+
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, LOCAL_VERIFICATIONS_FILE)
+    except Exception:
+        logger.exception("[VERIFY] Failed to persist local verifications")
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+def save_owned_claims():
+    os.makedirs(os.path.dirname(LOCAL_CLAIMS_FILE), exist_ok=True)
+
+    payload = {
+        "claims": _serialize_owned_claims()
+    }
+
+    temp_path = f"{LOCAL_CLAIMS_FILE}.tmp"
+
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temp_path, LOCAL_CLAIMS_FILE)
+
+    except Exception:
+        logger.exception("[Claims] Failed to persist owned claims")
+
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+def load_local_verifications():
+    if not os.path.exists(LOCAL_VERIFICATIONS_FILE):
+        return
+
+    try:
+        with open(LOCAL_VERIFICATIONS_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        logger.exception("[VERIFY] Failed to load local verifications")
+        return
+
+    if isinstance(payload, dict):
+        records = payload.get("verifications", [])
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        logger.warning("[VERIFY] Invalid verification state format, ignoring")
+        return
+
+    restored = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+
+        job_id = record.get("job_id")
+        chunk = record.get("chunk")
+        verifier = record.get("verifier")
+        if not job_id or chunk is None or not verifier:
+            continue
+
+        timestamp = record.get("timestamp", time.time())
+        try:
+            timestamp = float(timestamp)
+        except (TypeError, ValueError):
+            timestamp = time.time()
+
+        restored[(str(job_id), str(chunk))] = {
+            "verifier": str(verifier),
+            "original_result": record.get("original_result"),
+            "timestamp": timestamp,
+            "logs": record.get("logs", ""),
+        }
+
+    local_verifications.clear()
+    local_verifications.update(restored)
+    if restored:
+        logger.info(
+            f"[VERIFY] Restored {len(restored)} pending local verifications"
+        )
+
+def load_owned_claims():
+
+    if not os.path.exists(LOCAL_CLAIMS_FILE):
+        return
+
+    try:
+        with open(LOCAL_CLAIMS_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+
+    except Exception:
+        logger.exception("[Claims] Failed to load owned claims")
+        return
+
+    if isinstance(payload, dict):
+        records = payload.get("claims", [])
+
+    elif isinstance(payload, list):
+        records = payload
+
+    else:
+        logger.warning("[Claims] Invalid owned claims format")
+        return
+
+    restored = {}
+
+    for record in records:
+
+        if not isinstance(record, dict):
+            continue
+
+        job_id = record.get("job_id")
+        chunk = record.get("chunk")
+
+        if not job_id or chunk is None:
+            continue
+
+        timestamp = record.get("timestamp", time.time())
+
+        try:
+            timestamp = float(timestamp)
+
+        except (TypeError, ValueError):
+            timestamp = time.time()
+
+        restored[(str(job_id), str(chunk))] = {
+            "timestamp": timestamp,
+            "epoch": int(record.get("epoch", 0))
+        }
+
+    owned_claims.clear()
+    owned_claims.update(restored)
+
+    if restored:
+        logger.info(
+            f"[Claims] Restored {len(restored)} owned claims"
+        )
+
+def add_local_verification(verification_key, verification_data):
+    local_verifications[verification_key] = verification_data
+    save_local_verifications()
+
+
+def remove_local_verification(verification_key):
+    removed = local_verifications.pop(verification_key, None)
+    save_local_verifications()
+    return removed
+
+load_local_verifications()
+load_owned_claims()
 
 async def get_runtime_state():
 
@@ -356,12 +570,21 @@ async def cleanup_job_cache(job_id):
     await asyncio.to_thread(cleanup_job_files, job_id)
     job_cache.pop(job_id, None)
     download_locks.pop(job_id, None)
+    stale_claims = [
+        key for key in owned_claims
+        if key[0] == job_id
+    ]
+
+    for key in stale_claims:
+        owned_claims.pop(key, None)
+    save_owned_claims()
+
     stale_keys = [
         key for key in local_verifications
         if key[0] == job_id
     ]
     for key in stale_keys:
-        local_verifications.pop(key, None)
+        remove_local_verification(key)
     logger.info(f"[Cache] Cleaned job {job_id}")
 
 
@@ -392,6 +615,8 @@ async def verification_timeout_loop():
             if state:
                 state["completed"].discard(chunk)
                 state["claims"].pop(chunk, None)
+                owned_claims.pop((job_id, chunk), None)
+                save_owned_claims()
                 state["last_updated"] = time.time()
                 await broadcast_action(
                     "chunk_requeue",
@@ -399,7 +624,7 @@ async def verification_timeout_loop():
                     chunk=chunk
                 )
 
-            local_verifications.pop(key, None)
+            remove_local_verification(key)
 
 
 async def metrics_loop():
@@ -561,6 +786,8 @@ async def execute_chunk_task(job_id, chunk):
     except Exception:
         logger.exception("[Node] Download failed")
         state["claims"].pop(chunk, None)
+        owned_claims.pop((job_id, chunk), None)
+        save_owned_claims()
         return
 
     chunk_data = state.get("chunk_data_map", {}).get(str(chunk), {})
@@ -589,6 +816,11 @@ async def execute_chunk_task(job_id, chunk):
 
             current_claim["timestamp"] = time.time()
             current_state["last_updated"] = time.time()
+            owned_claims[(job_id, chunk)] = {
+                "timestamp": current_claim["timestamp"],
+                "epoch": current_claim["epoch"],
+            }
+            save_owned_claims()
 
     heartbeat_task = asyncio.create_task(refresh_claim())
     try:
@@ -655,12 +887,12 @@ async def execute_chunk_task(job_id, chunk):
         if eligible_peers:
             verifier = random.choice(eligible_peers)
             verification_key = (job_id, str(chunk))
-            local_verifications[verification_key] = {
+            add_local_verification(verification_key, {
                 "verifier": verifier,
                 "original_result": exec_output.get("result"),
                 "timestamp": time.time(),
                 "logs": exec_output.get("logs", "")
-            }
+            })
             await enqueue_message({
                 "type": "direct_message",
                 "payload": {
@@ -679,6 +911,8 @@ async def execute_chunk_task(job_id, chunk):
             if state and chunk not in state["completed"]:
                 state["completed"].add(chunk)
                 state["claims"].pop(chunk, None)
+                owned_claims.pop((job_id, chunk), None)
+                save_owned_claims()
                 state["last_updated"] = time.time()
 
                 await broadcast_action(
@@ -711,6 +945,8 @@ async def execute_chunk_task(job_id, chunk):
             return
 
         state["claims"].pop(chunk, None)
+        owned_claims.pop((job_id, chunk), None)
+        save_owned_claims()
 
     state = job_cache.get(job_id)
     if not state:
@@ -767,6 +1003,11 @@ async def scheduler_loop():
             }
             state["claims"][chunk] = claim
             state["last_updated"] = time.time()
+            owned_claims[(job_id, chunk)] = {
+                "timestamp": claim["timestamp"],
+                "epoch": claim["epoch"],
+            }
+            save_owned_claims()
 
         await broadcast_action(
             "claim_chunk",
@@ -780,6 +1021,64 @@ async def scheduler_loop():
 
         await asyncio.sleep(0.1)
 
+async def startup_claim_recovery():
+
+    if not owned_claims:
+        return
+
+    logger.info(
+        f"[Recovery] Restoring {len(owned_claims)} persisted claims"
+    )
+
+    now = time.time()
+
+    stale_claim_keys = []
+
+    for (job_id, chunk), claim in list(owned_claims.items()):
+
+        timestamp = claim.get("timestamp", 0)
+
+        if now - timestamp > CLAIM_TIMEOUT:
+
+            logger.warning(
+                f"[Recovery] Found stale persisted claim "
+                f"job={job_id} chunk={chunk}"
+            )
+
+            stale_claim_keys.append((job_id, chunk))
+
+            await broadcast_action(
+                "chunk_requeue",
+                job_id=job_id,
+                chunk=chunk
+            )
+
+            continue
+
+        state = init_job(job_id)
+
+        state["claims"][chunk] = {
+            "owner": get_node_id(),
+            "timestamp": timestamp,
+            "epoch": claim.get("epoch", 0)
+        }
+
+        state["last_updated"] = now
+
+        logger.info(
+            f"[Recovery] Restored claim "
+            f"job={job_id} chunk={chunk}"
+        )
+
+        asyncio.create_task(
+            execute_chunk_task(job_id, chunk)
+        )
+
+    for key in stale_claim_keys:
+        owned_claims.pop(key, None)
+
+    if stale_claim_keys:
+        save_owned_claims()
 
 async def cache_maintenance_loop():
     while True:
@@ -806,7 +1105,16 @@ async def cache_maintenance_loop():
                 if key[0] == job_id
             ]
             for key in stale_keys:
-                local_verifications.pop(key, None)
+                remove_local_verification(key)
+            stale_claims = [
+                key for key in owned_claims
+                if key[0] == job_id
+            ]
+
+            for key in stale_claims:
+                owned_claims.pop(key, None)
+
+            save_owned_claims()
             job_cache.pop(job_id, None)
             logger.info(f"[Cache] Pruned stale job {job_id}")
 
@@ -839,7 +1147,9 @@ async def claim_cleanup_loop():
                     f"{chunk} for job {job_id}"
                 )
                 state["claims"].pop(chunk, None)
-                local_verifications.pop((job_id, chunk), None)
+                owned_claims.pop((job_id, chunk), None)
+                save_owned_claims()
+                remove_local_verification((job_id, chunk))
                 await broadcast_action(
                     "chunk_requeue",
                     job_id=job_id,
@@ -952,6 +1262,7 @@ async def connect_to_relay():
     global verify_success_count, verify_mismatch_count
     global last_relay_warning
     global relay_connected
+    global startup_recovery_done
 
     while True:
         node_id = get_node_id()
@@ -986,6 +1297,10 @@ async def connect_to_relay():
                         f"claim_timeout={CLAIM_TIMEOUT}s "
                         f"known_peers={len(known_peers)}"
                     )
+
+                    if not startup_recovery_done:
+                        await startup_claim_recovery()
+                        startup_recovery_done = True
 
                     if not work_loop_started:
                         asyncio.create_task(sender_loop())
@@ -1035,6 +1350,15 @@ async def connect_to_relay():
 
                                 job_cache.pop(job_id, None)
                                 download_locks.pop(job_id, None)
+                                stale_claims = [
+                                    key for key in owned_claims
+                                    if key[0] == job_id
+                                ]
+
+                                for key in stale_claims:
+                                    owned_claims.pop(key, None)
+
+                                save_owned_claims()
 
                                 stale_keys = [
                                     key for key in local_verifications
@@ -1042,7 +1366,7 @@ async def connect_to_relay():
                                 ]
 
                                 for key in stale_keys:
-                                    local_verifications.pop(key, None)                                
+                                    remove_local_verification(key)
 
                         elif msg_type == "direct_message":
                             payload = data.get("payload", {})
@@ -1100,6 +1424,8 @@ async def connect_to_relay():
                                 if chunk not in state["completed"]:
                                     state["completed"].add(chunk)
                                     state["claims"].pop(chunk, None)
+                                    owned_claims.pop((job_id, chunk), None)
+                                    save_owned_claims()
                                     state["last_updated"] = time.time()
                                 else:
                                     logger.warning(
@@ -1127,7 +1453,7 @@ async def connect_to_relay():
                                         f"[VERIFY] Ignoring verification from "
                                         f"unexpected source for chunk {chunk} job {job_id}"
                                     )
-                                    local_verifications.pop(verification_key, None)
+                                    remove_local_verification(verification_key)
                                     continue
 
                                 original_result = str(
@@ -1152,6 +1478,8 @@ async def connect_to_relay():
                                     if state and chunk not in state["completed"]:
                                         state["completed"].add(chunk)
                                         state["claims"].pop(chunk, None)
+                                        owned_claims.pop((job_id, chunk), None)
+                                        save_owned_claims()
                                         state["last_updated"] = time.time()
                                         await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
 
@@ -1195,6 +1523,8 @@ async def connect_to_relay():
                                     if state:
                                         state["completed"].discard(chunk)
                                         state["claims"].pop(chunk, None)
+                                        owned_claims.pop((job_id, chunk), None)
+                                        save_owned_claims()
                                         state["last_updated"] = time.time()
                                         await broadcast_action(
                                                 "chunk_requeue",
@@ -1202,7 +1532,7 @@ async def connect_to_relay():
                                                 chunk=chunk
                                             )
 
-                                local_verifications.pop(verification_key, None)
+                                remove_local_verification(verification_key)
 
                             elif action == "job_complete":
                                 job_id = payload.get("job_id")
@@ -1211,6 +1541,15 @@ async def connect_to_relay():
                                     state = init_job(job_id)
                                     state["status"] = "completed"
                                     state["claims"].clear()
+                                    stale_claims = [
+                                        key for key in owned_claims
+                                        if key[0] == job_id
+                                    ]
+
+                                    for key in stale_claims:
+                                        owned_claims.pop(key, None)
+
+                                    save_owned_claims()
                                     state["last_updated"] = time.time()
 
                             elif action == "job_sync":
@@ -1227,12 +1566,20 @@ async def connect_to_relay():
                                     await asyncio.to_thread(cleanup_job_files, job_id)
                                     job_cache.pop(job_id, None)
                                     download_locks.pop(job_id, None)
+                                    stale_claims = [
+                                        key for key in owned_claims
+                                        if key[0] == job_id
+                                    ]
+                                    for key in stale_claims:
+                                        owned_claims.pop(key, None)
+                                    save_owned_claims()
+
                                     stale_keys = [
                                         key for key in local_verifications
                                         if key[0] == job_id
                                     ]
                                     for key in stale_keys:
-                                        local_verifications.pop(key, None)
+                                        remove_local_verification(key)
 
                             elif action == "peer_exchange":
                                 if source:
@@ -1259,8 +1606,10 @@ async def connect_to_relay():
 
                                 state["completed"].discard(chunk)
                                 state["claims"].pop(chunk, None)
+                                owned_claims.pop((job_id, chunk), None)
+                                save_owned_claims()
                                 state["last_updated"] = time.time()
-                                local_verifications.pop((job_id, chunk), None)
+                                remove_local_verification((job_id, chunk))
 
             except ws_exceptions.ConnectionClosed:
                 websocket_connection = None
