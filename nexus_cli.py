@@ -8,6 +8,7 @@ import signal
 from relay_client import connect_to_relay
 from resource_monitor import resource_monitor_loop
 from logger import setup_logger
+from chaos import chaos_enabled
 
 
 APP_VERSION = "v5.0.0"
@@ -26,6 +27,7 @@ def print_banner(logger, node_id, api_key):
     logger.info(f"API Key : {api_key[:6]}***")
     logger.info(f"Python  : {sys.version.split()[0]}")
     logger.info(f"Platform: {sys.platform}")
+    logger.info(f"[Chaos] Enabled={chaos_enabled()}")
     logger.info("=====================================")
 
 
