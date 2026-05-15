@@ -1,4 +1,5 @@
 import asyncio
+from email import message
 import websockets
 import json
 import os
@@ -11,8 +12,15 @@ from node.downloader import download_job
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
 from config import RELAY_URLS
 from logger import setup_logger
-from chaos import chaos_enabled
-
+from chaos import (
+    chaos_enabled,
+    should_trigger,
+    random_delay,
+    DROP_MESSAGE_PROBABILITY,
+    DUPLICATE_MESSAGE_PROBABILITY,
+    MESSAGE_DELAY_PROBABILITY,
+    MAX_DELAY_SECONDS,
+)
 metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
 active_chunks_lock = asyncio.Lock()
@@ -1193,7 +1201,52 @@ async def sender_loop():
             continue
 
         try:
-            await websocket_connection.send(json.dumps(message))
+
+            payload = json.dumps(message)
+
+            msg_type = message.get("type", "unknown")
+
+            # =====================================================
+            # CHAOS: DROP MESSAGE
+            # =====================================================
+
+            if should_trigger(DROP_MESSAGE_PROBABILITY):
+
+                logger.warning(
+                    f"[Chaos] Dropping outgoing message type={msg_type}"
+                )
+
+                continue
+
+            # =====================================================
+            # CHAOS: DELAY MESSAGE
+            # =====================================================
+
+            if should_trigger(MESSAGE_DELAY_PROBABILITY):
+
+                logger.warning(
+                    f"[Chaos] Delaying outgoing message type={msg_type}"
+                )
+
+                await random_delay(MAX_DELAY_SECONDS)
+
+            # =====================================================
+            # NORMAL SEND
+            # =====================================================
+
+            await websocket_connection.send(payload)
+
+            # =====================================================
+            # CHAOS: DUPLICATE MESSAGE
+            # =====================================================
+
+            if should_trigger(DUPLICATE_MESSAGE_PROBABILITY):
+
+                logger.warning(
+                    f"[Chaos] Duplicating outgoing message type={msg_type}"
+                )
+
+                await websocket_connection.send(payload)
         except Exception:
             logger.warning("[Sender] Retry sending failed")
 
