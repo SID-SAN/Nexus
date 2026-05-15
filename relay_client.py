@@ -11,6 +11,7 @@ from node.downloader import download_job
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
 from config import RELAY_URLS
 from logger import setup_logger
+from chaos import chaos_enabled
 
 metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
@@ -1297,6 +1298,7 @@ async def connect_to_relay():
                         f"claim_timeout={CLAIM_TIMEOUT}s "
                         f"known_peers={len(known_peers)}"
                     )
+                    logger.info(f"[Chaos] Enabled={chaos_enabled()}")
 
                     if not startup_recovery_done:
                         await startup_claim_recovery()
