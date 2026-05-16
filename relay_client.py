@@ -20,6 +20,9 @@ from chaos import (
     DUPLICATE_MESSAGE_PROBABILITY,
     MESSAGE_DELAY_PROBABILITY,
     MAX_DELAY_SECONDS,
+    EXECUTION_FREEZE_PROBABILITY,
+    MAX_EXECUTION_FREEZE_SECONDS,
+    NODE_CRASH_PROBABILITY,
 )
 metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
@@ -34,6 +37,7 @@ download_locks = {}
 owned_claims = {}
 relay_connected = False
 startup_recovery_done = False
+chaos_frozen_chunks = set()
 
 logger = setup_logger("node-client")
 
@@ -809,7 +813,13 @@ async def execute_chunk_task(job_id, chunk):
     await enqueue_runtime_snapshot()
 
     async def refresh_claim():
+
         while True:
+
+            if (job_id, chunk) in chaos_frozen_chunks:
+                await asyncio.sleep(1)
+                continue
+
             await asyncio.sleep(30)
 
             current_state = job_cache.get(job_id)
@@ -832,6 +842,45 @@ async def execute_chunk_task(job_id, chunk):
             save_owned_claims()
 
     heartbeat_task = asyncio.create_task(refresh_claim())
+    if chaos_enabled():
+
+        try:
+
+            freeze_probability = EXECUTION_FREEZE_PROBABILITY
+
+            if random.random() < freeze_probability:
+
+                freeze_time = random.uniform(
+                    5,
+                    MAX_EXECUTION_FREEZE_SECONDS
+                )
+
+                logger.warning(
+                    f"[Chaos] Freezing execution "
+                    f"job={job_id} chunk={chunk} "
+                    f"for {freeze_time:.2f}s"
+                )
+
+                chaos_frozen_chunks.add((job_id, chunk))
+
+                await asyncio.sleep(freeze_time)
+
+            crash_probability = NODE_CRASH_PROBABILITY
+
+            if random.random() < crash_probability:
+
+                logger.warning(
+                    f"[Chaos] Simulating node crash "
+                    f"job={job_id} chunk={chunk}"
+                )
+
+                raise SystemExit(
+                    "[Chaos] Simulated node crash"
+                )
+
+        finally:
+
+            chaos_frozen_chunks.discard((job_id, chunk))
     try:
         exec_output = await asyncio.wait_for(
             asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data),
@@ -1350,6 +1399,12 @@ async def connect_to_relay():
                         f"max_chunks={MAX_CONCURRENT_CHUNKS} "
                         f"claim_timeout={CLAIM_TIMEOUT}s "
                         f"known_peers={len(known_peers)}"
+                    )
+                    logger.info(
+                        f"[Chaos] "
+                        f"enabled={os.getenv('NEXUS_CHAOS', '0')} "
+                        f"freeze_prob={os.getenv('NEXUS_EXECUTION_FREEZE_PROBABILITY', '0')} "
+                        f"crash_prob={os.getenv('NEXUS_NODE_CRASH_PROBABILITY', '0')}"
                     )
                     logger.info(f"[Chaos] Enabled={chaos_enabled()}")
 
