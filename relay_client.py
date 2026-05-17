@@ -23,6 +23,7 @@ from chaos import (
     EXECUTION_FREEZE_PROBABILITY,
     MAX_EXECUTION_FREEZE_SECONDS,
     NODE_CRASH_PROBABILITY,
+    RELAY_DISCONNECT_PROBABILITY,
 )
 metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
@@ -1425,7 +1426,25 @@ async def connect_to_relay():
                     await enqueue_runtime_snapshot()
 
                     while True:
+                        # =====================================================
+                        # CHAOS: RELAY DISCONNECT
+                        # =====================================================
+
                         message = await websocket.recv()
+
+                        if (
+                            chaos_enabled()
+                            and should_trigger(RELAY_DISCONNECT_PROBABILITY)
+                        ):
+
+                            logger.warning(
+                                f"[Chaos] Simulating relay disconnect "
+                                f"relay={current_relay}"
+                            )
+
+                        await websocket.close()
+                        break
+
                         data = json.loads(message)
                         msg_type = data.get("type")
 
@@ -1727,6 +1746,11 @@ async def connect_to_relay():
                     current_relay = None
                 relay_connected = False
                 logger.warning(f"[Relay] Connection closed: {base_url}")
+                logger.warning(
+                    f"[Recovery] Relay failover triggered "
+                    f"known_peers={len(known_peers)} "
+                    f"jobs={len(job_cache)}"
+                )
             except (ws_exceptions.WebSocketException, OSError) as exc:
                 websocket_connection = None
                 if current_relay == base_url:
@@ -1749,4 +1773,6 @@ async def connect_to_relay():
         if now - last_relay_warning > 30:
             logger.warning("[Relay] All relays failed. Retrying in 3s...")
             last_relay_warning = now
-        await asyncio.sleep(3)
+        await asyncio.sleep(
+            random.uniform(2, 8)
+        )
