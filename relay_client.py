@@ -82,7 +82,8 @@ verify_success_count = 0
 verify_mismatch_count = 0
 verify_timeout_count = 0
 last_relay_warning = 0
-
+VERIFY_QUORUM_SIZE = 3
+VERIFY_MIN_AGREEMENT = 2
 active_chunks = 0
 MAX_CONCURRENT_CHUNKS = 2
 CLAIM_JITTER_MAX = 0.2
@@ -116,10 +117,15 @@ def _serialize_local_verifications():
         serialized.append({
             "job_id": str(job_id),
             "chunk": str(chunk),
-            "verifier": verification.get("verifier"),
+            "verifiers": verification.get("verifiers", []),
+            "responses": verification.get("responses", {}),
             "original_result": verification.get("original_result"),
             "timestamp": verification.get("timestamp", time.time()),
             "logs": verification.get("logs", ""),
+            "required_agreement": verification.get(
+                "required_agreement",
+                VERIFY_MIN_AGREEMENT
+            ),
         })
     return serialized
 
@@ -211,8 +217,9 @@ def load_local_verifications():
 
         job_id = record.get("job_id")
         chunk = record.get("chunk")
-        verifier = record.get("verifier")
-        if not job_id or chunk is None or not verifier:
+        verifiers = record.get("verifiers", [])
+        responses = record.get("responses", {})
+        if not job_id or chunk is None or not verifiers:
             continue
 
         timestamp = record.get("timestamp", time.time())
@@ -222,10 +229,17 @@ def load_local_verifications():
             timestamp = time.time()
 
         restored[(str(job_id), str(chunk))] = {
-            "verifier": str(verifier),
             "original_result": record.get("original_result"),
             "timestamp": timestamp,
             "logs": record.get("logs", ""),
+            "verifiers": record.get("verifiers", []),
+            "responses": record.get("responses", {}),
+            "required_agreement": int(
+                record.get(
+                    "required_agreement",
+                    VERIFY_MIN_AGREEMENT
+                )
+            ),
         }
 
     local_verifications.clear()
@@ -958,23 +972,36 @@ async def execute_chunk_task(job_id, chunk):
             if p != get_node_id()
         ]
         if eligible_peers:
-            verifier = random.choice(eligible_peers)
+            selected_verifiers = random.sample(
+                eligible_peers,
+                min(
+                    VERIFY_QUORUM_SIZE,
+                    len(eligible_peers)
+                )
+            ) 
+            required_agreement = min(
+                VERIFY_MIN_AGREEMENT,
+                len(selected_verifiers)
+            )           
             verification_key = (job_id, str(chunk))
             add_local_verification(verification_key, {
-                "verifier": verifier,
+                "verifiers": selected_verifiers,
+                "responses": {},
                 "original_result": exec_output.get("result"),
+                "required_agreement": required_agreement,
                 "timestamp": time.time(),
                 "logs": exec_output.get("logs", "")
             })
-            await enqueue_message({
-                "type": "direct_message",
-                "payload": {
-                    "target": verifier,
-                    "action": "verify_chunk",
-                    "job_id": job_id,
-                    "chunk": str(chunk)
-                }
-            })
+            for verifier in selected_verifiers:
+                await enqueue_message({
+                    "type": "direct_message",
+                    "payload": {
+                        "target": verifier,
+                        "action": "verify_chunk",
+                        "job_id": job_id,
+                        "chunk": str(chunk)
+                    }
+                })
         else:
             logger.warning(
                 f"[VERIFY] No verifier available, "
@@ -1618,12 +1645,13 @@ async def connect_to_relay():
 
                                 if not verification:
                                     continue
-                                if source != verification.get("verifier"):
+                                if source not in verification.get("verifiers", []):
+
                                     logger.warning(
-                                        f"[VERIFY] Ignoring verification from "
-                                        f"unexpected source for chunk {chunk} job {job_id}"
+                                        f"[VERIFY] Ignoring unauthorized verifier "
+                                        f"{source} for chunk {chunk}"
                                     )
-                                    remove_local_verification(verification_key)
+
                                     continue
 
                                 original_result = str(
@@ -1632,17 +1660,68 @@ async def connect_to_relay():
                                 verify_result = str(
                                     payload.get("result")
                                 ).strip()
+                                verification.setdefault("responses", {})
+                                verification["responses"][source] = {
+                                    "status": payload.get("status"),
+                                    "result": verify_result
+                                }
 
-                                if (
-                                    payload.get("status") == "success"
-                                    and original_result == verify_result
-                                ):
+                                matching = 0
+                                for response in verification["responses"].values():
+                                    if (
+                                        response.get("status") == "success"
+                                        and response.get("result") == original_result
+                                    ):
+                                        matching += 1
+
+                                if matching < verification["required_agreement"]:
+                                    total_responses = len(verification["responses"])
+
+                                    if total_responses >= len(verification["verifiers"]):
+                                        async with metrics_lock:
+                                            verify_mismatch_count += 1
+
+                                        logger.warning(
+                                            f"[Consensus] Quorum failed "
+                                            f"job={job_id} chunk={chunk}"
+                                        )
+
+                                        state = job_cache.get(job_id)
+                                        if state:
+                                            state["completed"].discard(chunk)
+                                            state["claims"].pop(chunk, None)
+                                            owned_claims.pop((job_id, chunk), None)
+                                            save_owned_claims()
+                                            state["last_updated"] = time.time()
+                                            await broadcast_action(
+                                                "chunk_requeue",
+                                                job_id=job_id,
+                                                chunk=chunk
+                                            )
+                                            remove_local_verification(verification_key)
+
+                                    else:
+                                        logger.info(
+                                            f"[VERIFY] Waiting quorum "
+                                            f"chunk={chunk} "
+                                            f"matches={matching}"
+                                        )
+
+                                    continue
+
+                                if matching >= verification["required_agreement"]:
+                                    if verification.get("finalized"):
+                                        continue
+                                    verification["finalized"] = True
+
                                     async with metrics_lock:
                                         verify_success_count += 1
                                     logger.debug(
-                                        f"[VERIFY] Verified chunk {chunk} "
-                                        f"for job {job_id}"
+                                        f"[VERIFY] Quorum verified chunk {chunk} "
+                                        f"for job {job_id} matches={matching}"
                                     )
+                                    remove_local_verification(verification_key)
+
 
                                     state = job_cache.get(job_id)
                                     if state and chunk not in state["completed"]:
@@ -1681,27 +1760,6 @@ async def connect_to_relay():
                                             if not state.get("cleanup_scheduled"):
                                                 state["cleanup_scheduled"] = True
                                                 asyncio.create_task(cleanup_job_cache(job_id))
-                                else:
-                                    async with metrics_lock:
-                                        verify_mismatch_count += 1
-                                    logger.warning(
-                                        f"[VERIFY] Mismatch for chunk {chunk} "
-                                        f"job {job_id}"
-                                    )
-
-                                    state = job_cache.get(job_id)
-                                    if state:
-                                        state["completed"].discard(chunk)
-                                        state["claims"].pop(chunk, None)
-                                        owned_claims.pop((job_id, chunk), None)
-                                        save_owned_claims()
-                                        state["last_updated"] = time.time()
-                                        await broadcast_action(
-                                                "chunk_requeue",
-                                                job_id=job_id,
-                                                chunk=chunk
-                                            )
-                                remove_local_verification(verification_key)
 
                         elif action == "job_complete":
                             job_id = payload.get("job_id")
