@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 from email import message
 import websockets
 import json
@@ -24,6 +24,8 @@ from chaos import (
     MAX_EXECUTION_FREEZE_SECONDS,
     NODE_CRASH_PROBABILITY,
     RELAY_DISCONNECT_PROBABILITY,
+    PARTITION_PROBABILITY,
+    PARTITION_MESSAGE_TYPES,
 )
 metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
@@ -530,6 +532,18 @@ async def peer_gossip_loop():
 async def broadcast_action(action, **kwargs):
     peers = list(known_peers)
     for peer_id in peers:
+        if (
+            chaos_enabled()
+            and should_trigger(PARTITION_PROBABILITY)
+        ):
+
+            logger.warning(
+                f"[Chaos] Partition blocked "
+                f"broadcast action={action} "
+                f"peer={peer_id}"
+            )
+
+            continue
         await enqueue_message({
             "type": "direct_message",
             "payload": {
@@ -701,7 +715,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
             f"chunk {chunk}"
         )
         return
-    
+
     async with runtime_state_lock:
         verifying_tasks += 1
     logger.debug(
@@ -1337,11 +1351,27 @@ def merge_job_state(local, incoming):
 
             if incoming_epoch > local_epoch:
                 local["claims"][chunk] = incoming_claim
+                logger.warning(
+                    f"[Consistency] Ownership conflict "
+                    f"chunk={chunk} "
+                    f"local_owner={local_claim.get('owner')} "
+                    f"incoming_owner={incoming_claim.get('owner')} "
+                    f"local_epoch={local_epoch} "
+                    f"incoming_epoch={incoming_epoch}"
+                )
             elif (
                 incoming_epoch == local_epoch
                 and incoming_claim.get("timestamp", 0) > local_claim.get("timestamp", 0)
             ):
                 local["claims"][chunk] = incoming_claim
+                logger.warning(
+                    f"[Consistency] Ownership conflict "
+                    f"chunk={chunk} "
+                    f"local_owner={local_claim.get('owner')} "
+                    f"incoming_owner={incoming_claim.get('owner')} "
+                    f"local_epoch={local_epoch} "
+                    f"incoming_epoch={incoming_epoch}"
+                )
 
     for chunk in list(local["completed"]):
         local["claims"].pop(chunk, None)
@@ -1442,10 +1472,25 @@ async def connect_to_relay():
                                 f"relay={current_relay}"
                             )
 
-                        await websocket.close()
-                        break
+                            await websocket.close()
+
+                            break
 
                         data = json.loads(message)
+                        if chaos_enabled():
+                            msg_type = data.get("type")
+                            payload = data.get("payload", {})
+                            action = payload.get("action")
+                            partition_key = action or msg_type
+                            if (
+                                partition_key in PARTITION_MESSAGE_TYPES
+                                and should_trigger(PARTITION_PROBABILITY)
+                            ):
+                                logger.warning(
+                                    f"[Chaos] Partition dropped incoming "
+                                    f"message={partition_key}"
+                                )
+                                continue
                         msg_type = data.get("type")
 
                         if msg_type == "heartbeat":
@@ -1501,7 +1546,6 @@ async def connect_to_relay():
                             payload = data.get("payload", {})
                             source = data.get("source")
                             action = payload.get("action")
-
                             if action == "claim_chunk":
                                 job_id = payload.get("job_id")
                                 chunk = str(payload.get("chunk"))
@@ -1514,14 +1558,12 @@ async def connect_to_relay():
                                     "epoch": payload.get("epoch", 0)
                                 }
                                 local_claim = state["claims"].get(chunk)
-
                                 accept = False
                                 if not local_claim:
                                     accept = True
                                 else:
                                     local_epoch = local_claim.get("epoch", 0)
                                     incoming_epoch = incoming_claim.get("epoch", 0)
-
                                     if incoming_epoch > local_epoch:
                                         accept = True
                                     elif (
@@ -1529,7 +1571,6 @@ async def connect_to_relay():
                                         and incoming_claim["timestamp"] > local_claim.get("timestamp", 0)
                                     ):
                                         accept = True
-
                                 if accept and chunk not in state["completed"]:
                                     state["claims"][chunk] = incoming_claim
                                     logger.debug(
@@ -1660,85 +1701,84 @@ async def connect_to_relay():
                                                 job_id=job_id,
                                                 chunk=chunk
                                             )
-
                                 remove_local_verification(verification_key)
 
-                            elif action == "job_complete":
-                                job_id = payload.get("job_id")
+                        elif action == "job_complete":
+                            job_id = payload.get("job_id")
 
-                                if job_id:
-                                    state = init_job(job_id)
-                                    state["status"] = "completed"
-                                    state["claims"].clear()
-                                    stale_claims = [
-                                        key for key in owned_claims
-                                        if key[0] == job_id
-                                    ]
-
-                                    for key in stale_claims:
-                                        owned_claims.pop(key, None)
-
-                                    save_owned_claims()
-                                    state["last_updated"] = time.time()
-
-                            elif action == "job_sync":
-                                job_id = payload.get("job_id")
-                                status = payload.get("status")
-                                if job_id and status:
-                                    local = init_job(job_id)
-                                    merge_job_state(local, status)
-                                    job_cache[job_id] = local
-
-                            elif action == "job_cleanup":
-                                job_id = payload.get("job_id")
-                                if job_id:
-                                    await asyncio.to_thread(cleanup_job_files, job_id)
-                                    job_cache.pop(job_id, None)
-                                    download_locks.pop(job_id, None)
-                                    stale_claims = [
-                                        key for key in owned_claims
-                                        if key[0] == job_id
-                                    ]
-                                    for key in stale_claims:
-                                        owned_claims.pop(key, None)
-                                    save_owned_claims()
-
-                                    stale_keys = [
-                                        key for key in local_verifications
-                                        if key[0] == job_id
-                                    ]
-                                    for key in stale_keys:
-                                        remove_local_verification(key)
-
-                            elif action == "peer_exchange":
-                                if source:
-                                    add_peer(source)
-                                else:
-                                    continue
-                                peers = payload.get("peers", [])
-
-                                if isinstance(peers, list):
-                                    for peer_id in peers:
-                                        if isinstance(peer_id, str):
-                                            add_peer(peer_id)
-
-                            elif action == "chunk_requeue":
-                                job_id = payload.get("job_id")
-                                chunk = str(payload.get("chunk"))
-
-                                if job_id is None or chunk is None:
-                                    continue
-
+                            if job_id:
                                 state = init_job(job_id)
-                                if state.get("status") == "completed":
-                                    continue
+                                state["status"] = "completed"
+                                state["claims"].clear()
+                                stale_claims = [
+                                    key for key in owned_claims
+                                    if key[0] == job_id
+                                ]
 
-                                state["completed"].discard(chunk)
-                                state["claims"].pop(chunk, None)
-                                owned_claims.pop((job_id, chunk), None)
+                                for key in stale_claims:
+                                    owned_claims.pop(key, None)
+
                                 save_owned_claims()
                                 state["last_updated"] = time.time()
-                                remove_local_verification((job_id, chunk))
+
+                        elif action == "job_sync":
+                            job_id = payload.get("job_id")
+                            status = payload.get("status")
+                            if job_id and status:
+                                local = init_job(job_id)
+                                merge_job_state(local, status)
+                                job_cache[job_id] = local
+
+                        elif action == "job_cleanup":
+                            job_id = payload.get("job_id")
+                            if job_id:
+                                await asyncio.to_thread(cleanup_job_files, job_id)
+                                job_cache.pop(job_id, None)
+                                download_locks.pop(job_id, None)
+                                stale_claims = [
+                                    key for key in owned_claims
+                                    if key[0] == job_id
+                                ]
+                                for key in stale_claims:
+                                    owned_claims.pop(key, None)
+                                save_owned_claims()
+
+                                stale_keys = [
+                                    key for key in local_verifications
+                                    if key[0] == job_id
+                                ]
+                                for key in stale_keys:
+                                    remove_local_verification(key)
+
+                        elif action == "peer_exchange":
+                            if source:
+                                add_peer(source)
+                            else:
+                                continue
+                            peers = payload.get("peers", [])
+
+                            if isinstance(peers, list):
+                                for peer_id in peers:
+                                    if isinstance(peer_id, str):
+                                        add_peer(peer_id)
+
+                        elif action == "chunk_requeue":
+                            job_id = payload.get("job_id")
+                            chunk = str(payload.get("chunk"))
+
+                            if job_id is None or chunk is None:
+                                continue
+
+                            state = init_job(job_id)
+                            if state.get("status") == "completed":
+                                continue
+
+                            state["completed"].discard(chunk)
+                            state["claims"].pop(chunk, None)
+                            owned_claims.pop((job_id, chunk), None)
+                            save_owned_claims()
+                            state["last_updated"] = time.time()
+                            remove_local_verification((job_id, chunk))
 
             except ws_exceptions.ConnectionClosed:
                 websocket_connection = None

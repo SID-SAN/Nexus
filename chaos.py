@@ -76,3 +76,14 @@ async def random_delay(max_seconds: float):
     delay = random.uniform(0, max_seconds)
 
     await asyncio.sleep(delay)
+
+PARTITION_PROBABILITY = float(
+    os.getenv("NEXUS_PARTITION_PROBABILITY", "0.0")
+)
+
+PARTITION_MESSAGE_TYPES = set(
+    os.getenv(
+        "NEXUS_PARTITION_MESSAGE_TYPES",
+        "claim_chunk,complete_chunk,job_sync"
+    ).split(",")
+)
