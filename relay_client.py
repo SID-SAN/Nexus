@@ -70,6 +70,12 @@ websocket_connection = None
 known_peers = set()
 peer_last_seen = {}
 peer_scores = {}
+DEFAULT_TRUST_SCORE = 100
+TRUST_REWARD = 2
+TRUST_PENALTY_MISMATCH = 10
+TRUST_PENALTY_TIMEOUT = 5
+TRUST_MIN_SCORE = 0
+TRUST_MAX_SCORE = 200
 MAX_PEERS = 8
 PEER_GOSSIP_INTERVAL = 30
 PEER_STALE_TIMEOUT = 90
@@ -122,6 +128,7 @@ def _serialize_local_verifications():
             "original_result": verification.get("original_result"),
             "timestamp": verification.get("timestamp", time.time()),
             "logs": verification.get("logs", ""),
+            "finalized": verification.get("finalized", False),
             "required_agreement": verification.get(
                 "required_agreement",
                 VERIFY_MIN_AGREEMENT
@@ -234,6 +241,7 @@ def load_local_verifications():
             "logs": record.get("logs", ""),
             "verifiers": record.get("verifiers", []),
             "responses": record.get("responses", {}),
+            "finalized": bool(record.get("finalized", False)),
             "required_agreement": int(
                 record.get(
                     "required_agreement",
@@ -461,6 +469,16 @@ def validate_chunk_data(chunk_data):
 
     return valid_data
 
+def get_peer_score(peer_id):
+    if peer_id not in peer_scores:
+        peer_scores[peer_id] = {
+            "success": 0,
+            "timeouts": 0,
+            "mismatches": 0,
+            "trust": DEFAULT_TRUST_SCORE
+        }
+    return peer_scores[peer_id]
+
 def add_peer(peer_id):
     if not peer_id:
         return
@@ -479,7 +497,8 @@ def add_peer(peer_id):
         peer_scores[peer_id] = {
             "success": 0,
             "timeouts": 0,
-            "mismatches": 0
+            "mismatches": 0,
+            "trust": DEFAULT_TRUST_SCORE
         }
     if is_new_peer:
         logger.info(
@@ -666,6 +685,29 @@ async def verification_timeout_loop():
                     chunk=chunk
                 )
 
+            for verifier_id in verification.get("verifiers", []):
+
+                if verifier_id not in verification.get(
+                    "responses",
+                    {}
+                ):
+
+                    score = get_peer_score(verifier_id)
+
+                    score["timeouts"] = (
+                        score.get("timeouts", 0) + 1
+                    )
+
+                    current = score.get(
+                        "trust",
+                        DEFAULT_TRUST_SCORE
+                    )
+
+                    score["trust"] = max(
+                        TRUST_MIN_SCORE,
+                        current - TRUST_PENALTY_TIMEOUT
+                    )
+
             remove_local_verification(key)
 
 
@@ -677,6 +719,11 @@ async def metrics_loop():
             success = verify_success_count
             mismatch = verify_mismatch_count
             timeout = verify_timeout_count
+            top_trusted = sorted(
+                peer_scores.items(),
+                key=lambda x: x[1].get("trust", 0),
+                reverse=True
+            )[:5]
         async with active_chunks_lock:
             current_active = active_chunks
         claims = sum(
@@ -704,6 +751,9 @@ async def metrics_loop():
             f"known_peers={len(known_peers)} "
             f"jobs={len(job_cache)} "
             f"active_chunks={current_active}"
+        )
+        logger.info(
+            f"[Trust] Top peers: {top_trusted}"
         )
 
 
@@ -972,13 +1022,32 @@ async def execute_chunk_task(job_id, chunk):
             if p != get_node_id()
         ]
         if eligible_peers:
-            selected_verifiers = random.sample(
+            weighted_peers = sorted(
                 eligible_peers,
+                key=lambda p: peer_scores.get(
+                    p,
+                    {}
+                ).get(
+                    "trust",
+                    DEFAULT_TRUST_SCORE
+                ),
+                reverse=True
+            )
+
+            top_candidates = weighted_peers[
+                :max(
+                    VERIFY_QUORUM_SIZE * 2,
+                    VERIFY_QUORUM_SIZE
+                )
+            ]
+
+            selected_verifiers = random.sample(
+                top_candidates,
                 min(
                     VERIFY_QUORUM_SIZE,
-                    len(eligible_peers)
+                    len(top_candidates)
                 )
-            ) 
+            )
             required_agreement = min(
                 VERIFY_MIN_AGREEMENT,
                 len(selected_verifiers)
@@ -1661,6 +1730,8 @@ async def connect_to_relay():
                                     payload.get("result")
                                 ).strip()
                                 verification.setdefault("responses", {})
+                                if source in verification["responses"]:
+                                    continue
                                 verification["responses"][source] = {
                                     "status": payload.get("status"),
                                     "result": verify_result
@@ -1685,6 +1756,26 @@ async def connect_to_relay():
                                             f"[Consensus] Quorum failed "
                                             f"job={job_id} chunk={chunk}"
                                         )
+
+                                        for verifier_id, response in verification["responses"].items():
+                                            if (
+                                                response.get("result") != original_result
+                                            ):
+                                                score = get_peer_score(verifier_id)
+
+                                                score["mismatches"] = (
+                                                    score.get("mismatches", 0) + 1
+                                                )
+
+                                                current = score.get(
+                                                    "trust",
+                                                    DEFAULT_TRUST_SCORE
+                                                )
+
+                                                score["trust"] = max(
+                                                    TRUST_MIN_SCORE,
+                                                    current - TRUST_PENALTY_MISMATCH
+                                                )
 
                                         state = job_cache.get(job_id)
                                         if state:
@@ -1713,6 +1804,25 @@ async def connect_to_relay():
                                     if verification.get("finalized"):
                                         continue
                                     verification["finalized"] = True
+
+                                    for verifier_id, response in verification["responses"].items():
+                                        if (
+                                            response.get("status") == "success"
+                                            and response.get("result") == original_result
+                                        ):
+                                            score = get_peer_score(verifier_id)
+
+                                            score["success"] = score.get("success", 0) + 1
+
+                                            current = score.get(
+                                                "trust",
+                                                DEFAULT_TRUST_SCORE
+                                            )
+
+                                            score["trust"] = min(
+                                                TRUST_MAX_SCORE,
+                                                current + TRUST_REWARD
+                                            )
 
                                     async with metrics_lock:
                                         verify_success_count += 1
