@@ -70,6 +70,7 @@ websocket_connection = None
 known_peers = set()
 peer_last_seen = {}
 peer_scores = {}
+peer_runtime = {}
 DEFAULT_TRUST_SCORE = 100
 TRUST_REWARD = 2
 TRUST_PENALTY_MISMATCH = 10
@@ -92,6 +93,8 @@ VERIFY_QUORUM_SIZE = 3
 VERIFY_MIN_AGREEMENT = 2
 active_chunks = 0
 MAX_CONCURRENT_CHUNKS = 2
+LOAD_PRESSURE_THRESHOLD = 0.75
+MAX_FAIRNESS_DELAY = 2.0
 CLAIM_JITTER_MAX = 0.2
 FAILED_CHUNK_BACKOFF = 1
 LOCAL_VERIFY_TIMEOUT = 45
@@ -520,6 +523,7 @@ def remove_stale_peers():
         known_peers.discard(peer)
         peer_last_seen.pop(peer, None)
         peer_scores.pop(peer, None)
+        peer_runtime.pop(peer, None)
 
         logger.info(f"[Peers] Removed stale peer {peer}")
 
@@ -1024,14 +1028,31 @@ async def execute_chunk_task(job_id, chunk):
         if eligible_peers:
             weighted_peers = sorted(
                 eligible_peers,
-                key=lambda p: peer_scores.get(
-                    p,
-                    {}
-                ).get(
-                    "trust",
-                    DEFAULT_TRUST_SCORE
+                key=lambda p: (
+                    peer_scores.get(
+                        p,
+                        {}
+                    ).get(
+                        "trust",
+                        DEFAULT_TRUST_SCORE
+                    )
+                    -
+                    (
+                        peer_runtime.get(
+                            p,
+                            {}
+                        ).get(
+                            "active_chunks",
+                            0
+                        ) * 10
+                    )
                 ),
                 reverse=True
+            )
+
+            logger.debug(
+                f"[Fairness] Weighted verifier ranking: "
+                f"{weighted_peers}"
             )
 
             top_candidates = weighted_peers[
@@ -1140,6 +1161,23 @@ async def scheduler_loop():
 
         async with active_chunks_lock:
             current_active = active_chunks
+
+        load_ratio = (
+            current_active / max(1, MAX_CONCURRENT_CHUNKS)
+        )
+
+        if load_ratio >= LOAD_PRESSURE_THRESHOLD:
+
+            fairness_delay = (
+                load_ratio * MAX_FAIRNESS_DELAY
+            )
+
+            logger.debug(
+                f"[Fairness] Local load pressure "
+                f"delay={fairness_delay:.2f}s"
+            )
+            await asyncio.sleep(fairness_delay)
+
         if current_active >= MAX_CONCURRENT_CHUNKS:
             await asyncio.sleep(1)
             continue
@@ -1591,6 +1629,28 @@ async def connect_to_relay():
 
                         if msg_type == "heartbeat":
                             await enqueue_runtime_snapshot()
+
+                        elif msg_type == "heartbeat_ack":
+
+                            source = data.get("source")
+
+                            payload = data.get("payload", {})
+
+                            if source:
+
+                                peer_runtime[source] = {
+                                    "status": payload.get("status"),
+                                    "active_chunks": payload.get(
+                                        "active_chunks",
+                                        0
+                                    ),
+                                    "known_peers": payload.get(
+                                        "known_peers",
+                                        0
+                                    ),
+                                    "relay": payload.get("relay"),
+                                    "timestamp": time.time()
+                                }
 
                         elif msg_type == "peer_list":
                             peers = data.get("nodes", [])
