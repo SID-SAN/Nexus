@@ -399,6 +399,27 @@ def build_job_state(job):
         "last_updated": job.get("last_updated", time.time())
     }
 
+def build_job_digest():
+
+    digest = {}
+
+    for job_id, state in job_cache.items():
+
+        digest[job_id] = {
+            "completed": len(
+                state.get("completed", [])
+            ),
+            "claims": len(
+                state.get("claims", {})
+            ),
+            "status": state.get("status"),
+            "updated": state.get(
+                "last_updated",
+                0
+            )
+        }
+
+    return digest
 
 def init_job(job_id, total_chunks=0, chunk_data_map=None):
     state = job_cache.setdefault(job_id, {
@@ -564,6 +585,43 @@ async def peer_gossip_loop():
 
         except Exception:
             logger.exception("[Peers] Gossip loop failed")
+            await asyncio.sleep(5)
+
+async def gossip_digest_loop():
+    while True:
+
+        try:
+
+            await asyncio.sleep(15)
+
+            if not known_peers:
+                continue
+
+            digest = build_job_digest()
+
+            peers = list(known_peers)
+
+            selected = random.sample(
+                peers,
+                min(2, len(peers))
+            )
+
+            for peer_id in selected:
+
+                await enqueue_message({
+                    "type": "direct_message",
+                    "payload": {
+                        "target": peer_id,
+                        "action": "digest_gossip",
+                        "digest": digest
+                    }
+                })
+
+        except Exception:
+            logger.exception(
+                "[Gossip] Digest loop failed"
+            )
+
             await asyncio.sleep(5)
 
 async def broadcast_action(action, **kwargs):
@@ -1583,6 +1641,7 @@ async def connect_to_relay():
                         asyncio.create_task(cache_maintenance_loop())
                         asyncio.create_task(claim_cleanup_loop())
                         asyncio.create_task(peer_gossip_loop())
+                        asyncio.create_task(gossip_digest_loop())
                         asyncio.create_task(verification_timeout_loop())
                         asyncio.create_task(metrics_loop())
                         work_loop_started = True
@@ -1957,6 +2016,28 @@ async def connect_to_relay():
                                 merge_job_state(local, status)
                                 job_cache[job_id] = local
 
+                        elif action == "job_sync_request":
+
+                            job_id = payload.get("job_id")
+
+                            if not job_id:
+                                continue
+
+                            state = job_cache.get(job_id)
+
+                            if not state:
+                                continue
+
+                            await enqueue_message({
+                                "type": "direct_message",
+                                "payload": {
+                                    "target": source,
+                                    "action": "job_sync",
+                                    "job_id": job_id,
+                                    "status": build_job_state(state)
+                                }
+                            })
+
                         elif action == "job_cleanup":
                             job_id = payload.get("job_id")
                             if job_id:
@@ -1989,6 +2070,87 @@ async def connect_to_relay():
                                 for peer_id in peers:
                                     if isinstance(peer_id, str):
                                         add_peer(peer_id)
+
+                        elif action == "digest_gossip":
+
+                            incoming_digest = payload.get(
+                                "digest",
+                                {}
+                            )
+
+                            if not isinstance(incoming_digest, dict):
+                                continue
+
+                            local_digest = build_job_digest()
+
+                            for job_id, remote_state in incoming_digest.items():
+
+                                if not isinstance(remote_state, dict):
+                                    continue
+
+                                local_state = local_digest.get(job_id)
+
+                                if not local_state:
+
+                                    logger.info(
+                                        f"[Gossip] Missing job discovered "
+                                        f"job={job_id}"
+                                    )
+
+                                    await enqueue_message({
+                                        "type": "direct_message",
+                                        "payload": {
+                                            "target": source,
+                                            "action": "job_sync_request",
+                                            "job_id": job_id
+                                        }
+                                    })
+                                    continue
+
+                                remote_updated = remote_state.get(
+                                    "updated",
+                                    0
+                                )
+
+                                local_updated = local_state.get(
+                                    "updated",
+                                    0
+                                )
+
+                                if remote_updated > local_updated:
+
+                                    logger.info(
+                                        f"[Gossip] Remote state newer "
+                                        f"job={job_id}"
+                                    )
+
+                                    await enqueue_message({
+                                        "type": "direct_message",
+                                        "payload": {
+                                            "target": source,
+                                            "action": "job_sync_request",
+                                            "job_id": job_id
+                                        }
+                                    })
+                                    
+                                elif local_updated > remote_updated:
+
+                                    logger.info(
+                                        f"[Gossip] Local state newer "
+                                        f"job={job_id}"
+                                    )
+
+                                    await enqueue_message({
+                                        "type": "direct_message",
+                                        "payload": {
+                                            "target": source,
+                                            "action": "job_sync",
+                                            "job_id": job_id,
+                                            "status": build_job_state(
+                                                job_cache[job_id]
+                                            )
+                                        }
+                                    })
 
                         elif action == "chunk_requeue":
                             job_id = payload.get("job_id")
