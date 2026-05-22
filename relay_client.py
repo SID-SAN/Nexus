@@ -396,7 +396,8 @@ def build_job_state(job):
         "claims": job.get("claims", {}),
         "status": job.get("status", "running"),
         "chunk_data_map": job.get("chunk_data_map", {}),
-        "last_updated": job.get("last_updated", time.time())
+        "last_updated": job.get("last_updated", time.time()),
+        "version_vector": job.get("version_vector",{})
     }
 
 def build_job_digest():
@@ -432,7 +433,8 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
         "chunk_data_map": {},
         "total_chunks": total_chunks,
         "last_sync": 0,
-        "last_updated": time.time()
+        "last_updated": time.time(),
+        "version_vector": {}
     })
 
     if total_chunks:
@@ -586,6 +588,52 @@ async def peer_gossip_loop():
         except Exception:
             logger.exception("[Peers] Gossip loop failed")
             await asyncio.sleep(5)
+
+def increment_version_vector(state):
+
+    node_id = get_node_id()
+
+    vector = state.setdefault(
+        "version_vector",
+        {}
+    )
+
+    vector[node_id] = (
+        vector.get(node_id, 0) + 1
+    )
+
+
+def compare_version_vectors(a, b):
+
+    a = a or {}
+    b = b or {}
+
+    a_bigger = False
+    b_bigger = False
+
+    keys = set(a.keys()) | set(b.keys())
+
+    for key in keys:
+
+        av = a.get(key, 0)
+        bv = b.get(key, 0)
+
+        if av > bv:
+            a_bigger = True
+
+        elif bv > av:
+            b_bigger = True
+
+    if a_bigger and not b_bigger:
+        return "newer"
+
+    if b_bigger and not a_bigger:
+        return "older"
+
+    if not a_bigger and not b_bigger:
+        return "equal"
+
+    return "concurrent"
 
 async def gossip_digest_loop():
     while True:
@@ -741,6 +789,7 @@ async def verification_timeout_loop():
                 owned_claims.pop((job_id, chunk), None)
                 save_owned_claims()
                 state["last_updated"] = time.time()
+                increment_version_vector(state)
                 await broadcast_action(
                     "chunk_requeue",
                     job_id=job_id,
@@ -976,6 +1025,7 @@ async def execute_chunk_task(job_id, chunk):
 
             current_claim["timestamp"] = time.time()
             current_state["last_updated"] = time.time()
+            increment_version_vector(state)
             owned_claims[(job_id, chunk)] = {
                 "timestamp": current_claim["timestamp"],
                 "epoch": current_claim["epoch"],
@@ -1162,6 +1212,7 @@ async def execute_chunk_task(job_id, chunk):
                 owned_claims.pop((job_id, chunk), None)
                 save_owned_claims()
                 state["last_updated"] = time.time()
+                increment_version_vector(state)
 
                 await broadcast_action(
                     "complete_chunk",
@@ -1268,6 +1319,7 @@ async def scheduler_loop():
             }
             state["claims"][chunk] = claim
             state["last_updated"] = time.time()
+            increment_version_vector(state)
             owned_claims[(job_id, chunk)] = {
                 "timestamp": claim["timestamp"],
                 "epoch": claim["epoch"],
@@ -1425,6 +1477,7 @@ async def claim_cleanup_loop():
                     f"{chunk} for job {job_id}"
                 )
                 state["last_updated"] = time.time()
+                increment_version_vector(state)
 
         if is_recovering:
 
@@ -1515,6 +1568,27 @@ async def sender_loop():
 
 
 def merge_job_state(local, incoming):
+    local_vector = local.get(
+        "version_vector",
+        {}
+    )
+
+    incoming_vector = incoming.get(
+        "version_vector",
+        {}
+    )
+
+    vector_result = compare_version_vectors(
+        incoming_vector,
+        local_vector
+    )
+
+    if vector_result == "concurrent":
+        logger.warning(
+            "[VectorClock] Concurrent state "
+            "detected during merge"
+        )
+
     if not isinstance(incoming, dict):
         return local
 
@@ -1577,6 +1651,19 @@ def merge_job_state(local, incoming):
         local["status"] = "completed"
 
     local["last_updated"] = max(local.get("last_updated", 0), incoming.get("last_updated", 0) or 0)
+
+    merged_vector = local.setdefault(
+        "version_vector",
+        {}
+    )
+
+    for node_id, counter in incoming_vector.items():
+
+        merged_vector[node_id] = max(
+            merged_vector.get(node_id, 0),
+            counter
+        )
+
     return local
 
 
@@ -1730,6 +1817,7 @@ async def connect_to_relay():
                             state = init_job(job_id, total_chunks=total_chunks, chunk_data_map=chunk_data)
                             state["status"] = "running"
                             state["last_updated"] = time.time()
+                            increment_version_vector(state)
 
                         elif msg_type == "cleanup_job":
                             payload = data.get("payload", {})
@@ -1799,6 +1887,7 @@ async def connect_to_relay():
                                         f"job {job_id}"
                                     )
                                 state["last_updated"] = time.time()
+                                increment_version_vector(state)
 
                             elif action == "complete_chunk":
                                 job_id = payload.get("job_id")
@@ -1812,6 +1901,7 @@ async def connect_to_relay():
                                     owned_claims.pop((job_id, chunk), None)
                                     save_owned_claims()
                                     state["last_updated"] = time.time()
+                                    increment_version_vector(state)
                                 else:
                                     logger.warning(
                                         f"[Consistency] Duplicate completion "
@@ -1903,6 +1993,7 @@ async def connect_to_relay():
                                             owned_claims.pop((job_id, chunk), None)
                                             save_owned_claims()
                                             state["last_updated"] = time.time()
+                                            increment_version_vector(state)
                                             await broadcast_action(
                                                 "chunk_requeue",
                                                 job_id=job_id,
@@ -1959,6 +2050,7 @@ async def connect_to_relay():
                                         owned_claims.pop((job_id, chunk), None)
                                         save_owned_claims()
                                         state["last_updated"] = time.time()
+                                        increment_version_vector(state)
                                         await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
 
                                     await enqueue_message({
@@ -2007,6 +2099,7 @@ async def connect_to_relay():
 
                                 save_owned_claims()
                                 state["last_updated"] = time.time()
+                                increment_version_vector(state)
 
                         elif action == "job_sync":
                             job_id = payload.get("job_id")
@@ -2168,6 +2261,7 @@ async def connect_to_relay():
                             owned_claims.pop((job_id, chunk), None)
                             save_owned_claims()
                             state["last_updated"] = time.time()
+                            increment_version_vector(state)
                             remove_local_verification((job_id, chunk))
 
             except ws_exceptions.ConnectionClosed:
