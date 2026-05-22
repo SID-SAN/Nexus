@@ -397,7 +397,8 @@ def build_job_state(job):
         "status": job.get("status", "running"),
         "chunk_data_map": job.get("chunk_data_map", {}),
         "last_updated": job.get("last_updated", time.time()),
-        "version_vector": job.get("version_vector",{})
+        "version_vector": job.get("version_vector",{}),
+        "conflicts": job.get("conflicts", [])
     }
 
 def build_job_digest():
@@ -434,7 +435,8 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
         "total_chunks": total_chunks,
         "last_sync": 0,
         "last_updated": time.time(),
-        "version_vector": {}
+        "version_vector": {},
+        "conflicts": []
     })
 
     if total_chunks:
@@ -634,6 +636,45 @@ def compare_version_vectors(a, b):
         return "equal"
 
     return "concurrent"
+
+def compare_claims(local_claim, incoming_claim):
+
+    if not local_claim:
+        return incoming_claim
+
+    if not incoming_claim:
+        return local_claim
+
+    local_epoch = local_claim.get("epoch", 0)
+    incoming_epoch = incoming_claim.get("epoch", 0)
+
+    if incoming_epoch > local_epoch:
+        return incoming_claim
+
+    if local_epoch > incoming_epoch:
+        return local_claim
+
+    local_ts = local_claim.get("timestamp", 0)
+    incoming_ts = incoming_claim.get("timestamp", 0)
+
+    if incoming_ts > local_ts:
+        return incoming_claim
+
+    if local_ts > incoming_ts:
+        return local_claim
+
+    local_owner = str(
+        local_claim.get("owner", "")
+    )
+
+    incoming_owner = str(
+        incoming_claim.get("owner", "")
+    )
+
+    if incoming_owner > local_owner:
+        return incoming_claim
+
+    return local_claim
 
 async def gossip_digest_loop():
     while True:
@@ -1584,6 +1625,16 @@ def merge_job_state(local, incoming):
     )
 
     if vector_result == "concurrent":
+        local.setdefault(
+            "conflicts",
+            []
+        ).append({
+            "timestamp": time.time(),
+            "incoming_vector": incoming_vector,
+            "local_vector": local_vector
+        })
+        local["conflicts"] = local["conflicts"][-20:]
+
         logger.warning(
             "[VectorClock] Concurrent state "
             "detected during merge"
@@ -1612,31 +1663,19 @@ def merge_job_state(local, incoming):
                 local["claims"][chunk] = incoming_claim
                 continue
 
-            incoming_epoch = incoming_claim.get("epoch", 0)
-            local_epoch = local_claim.get("epoch", 0)
+            winner = compare_claims(
+                local_claim,
+                incoming_claim
+            )
 
-            if incoming_epoch > local_epoch:
+            if winner is incoming_claim:
+
                 local["claims"][chunk] = incoming_claim
+
                 logger.warning(
-                    f"[Consistency] Ownership conflict "
+                    f"[Consistency] Claim arbitration "
                     f"chunk={chunk} "
-                    f"local_owner={local_claim.get('owner')} "
-                    f"incoming_owner={incoming_claim.get('owner')} "
-                    f"local_epoch={local_epoch} "
-                    f"incoming_epoch={incoming_epoch}"
-                )
-            elif (
-                incoming_epoch == local_epoch
-                and incoming_claim.get("timestamp", 0) > local_claim.get("timestamp", 0)
-            ):
-                local["claims"][chunk] = incoming_claim
-                logger.warning(
-                    f"[Consistency] Ownership conflict "
-                    f"chunk={chunk} "
-                    f"local_owner={local_claim.get('owner')} "
-                    f"incoming_owner={incoming_claim.get('owner')} "
-                    f"local_epoch={local_epoch} "
-                    f"incoming_epoch={incoming_epoch}"
+                    f"winner={incoming_claim.get('owner')}"
                 )
 
     for chunk in list(local["completed"]):
@@ -1861,31 +1900,31 @@ async def connect_to_relay():
                                     "epoch": payload.get("epoch", 0)
                                 }
                                 local_claim = state["claims"].get(chunk)
-                                accept = False
-                                if not local_claim:
-                                    accept = True
-                                else:
-                                    local_epoch = local_claim.get("epoch", 0)
-                                    incoming_epoch = incoming_claim.get("epoch", 0)
-                                    if incoming_epoch > local_epoch:
-                                        accept = True
-                                    elif (
-                                        incoming_epoch == local_epoch
-                                        and incoming_claim["timestamp"] > local_claim.get("timestamp", 0)
-                                    ):
-                                        accept = True
-                                if accept and chunk not in state["completed"]:
+                                if chunk in state["completed"]:
+                                    continue
+                                
+                                winner = compare_claims(
+                                    local_claim,
+                                    incoming_claim
+                                )
+
+                                if winner is incoming_claim:
+
                                     state["claims"][chunk] = incoming_claim
+
                                     logger.debug(
-                                        f"[Claims] Accepted claim for chunk {chunk} "
-                                        f"job {job_id} owner={incoming_claim['owner']} "
-                                        f"epoch={incoming_claim['epoch']}"
+                                        f"[Claims] Accepted claim "
+                                        f"chunk={chunk} "
+                                        f"owner={incoming_claim['owner']}"
                                     )
+
                                 else:
+
                                     logger.debug(
-                                        f"[Claims] Rejected stale claim for chunk {chunk} "
-                                        f"job {job_id}"
+                                        f"[Claims] Rejected stale claim "
+                                        f"chunk={chunk}"
                                     )
+
                                 state["last_updated"] = time.time()
                                 increment_version_vector(state)
 
