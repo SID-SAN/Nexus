@@ -1,5 +1,6 @@
 ﻿import asyncio
 from email import message
+from threading import local
 import websockets
 import json
 import os
@@ -415,9 +416,9 @@ def build_job_digest():
                 state.get("claims", {})
             ),
             "status": state.get("status"),
-            "updated": state.get(
-                "last_updated",
-                0
+            "version_vector": state.get(
+                "version_vector",
+                {}
             )
         }
 
@@ -1609,6 +1610,9 @@ async def sender_loop():
 
 
 def merge_job_state(local, incoming):
+    if not isinstance(incoming, dict):
+        return local
+    
     local_vector = local.get(
         "version_vector",
         {}
@@ -1639,9 +1643,6 @@ def merge_job_state(local, incoming):
             "[VectorClock] Concurrent state "
             "detected during merge"
         )
-
-    if not isinstance(incoming, dict):
-        return local
 
     incoming_chunks = incoming.get("chunks", [])
     incoming_completed = incoming.get("completed", [])
@@ -1902,7 +1903,7 @@ async def connect_to_relay():
                                 local_claim = state["claims"].get(chunk)
                                 if chunk in state["completed"]:
                                     continue
-                                
+
                                 winner = compare_claims(
                                     local_claim,
                                     incoming_claim
@@ -2239,20 +2240,25 @@ async def connect_to_relay():
                                     })
                                     continue
 
-                                remote_updated = remote_state.get(
-                                    "updated",
-                                    0
+                                remote_vector = remote_state.get(
+                                    "version_vector",
+                                    {}
                                 )
 
-                                local_updated = local_state.get(
-                                    "updated",
-                                    0
+                                local_vector = local_state.get(
+                                    "version_vector",
+                                    {}
                                 )
 
-                                if remote_updated > local_updated:
+                                vector_result = compare_version_vectors(
+                                    remote_vector,
+                                    local_vector
+                                )
+
+                                if vector_result == "newer":
 
                                     logger.info(
-                                        f"[Gossip] Remote state newer "
+                                        f"[Gossip] Remote vector newer "
                                         f"job={job_id}"
                                     )
 
@@ -2264,11 +2270,11 @@ async def connect_to_relay():
                                             "job_id": job_id
                                         }
                                     })
-                                    
-                                elif local_updated > remote_updated:
+
+                                elif vector_result == "older":
 
                                     logger.info(
-                                        f"[Gossip] Local state newer "
+                                        f"[Gossip] Local vector newer "
                                         f"job={job_id}"
                                     )
 
@@ -2283,6 +2289,26 @@ async def connect_to_relay():
                                             )
                                         }
                                     })
+
+                                elif vector_result == "concurrent":
+
+                                    logger.warning(
+                                        f"[Gossip] Concurrent divergence "
+                                        f"job={job_id}"
+                                    )
+
+                                    await enqueue_message({
+                                        "type": "direct_message",
+                                        "payload": {
+                                            "target": source,
+                                            "action": "job_sync_request",
+                                            "job_id": job_id
+                                        }
+                                    })
+                                    logger.warning(
+                                        f"[AntiEntropy] Split-brain divergence "
+                                        f"detected for job={job_id}"
+                                    )
 
                         elif action == "chunk_requeue":
                             job_id = payload.get("job_id")
