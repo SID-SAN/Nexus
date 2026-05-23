@@ -437,7 +437,8 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
         "last_sync": 0,
         "last_updated": time.time(),
         "version_vector": {},
-        "conflicts": []
+        "conflicts": [],
+        "delta_log": []
     })
 
     if total_chunks:
@@ -677,6 +678,24 @@ def compare_claims(local_claim, incoming_claim):
 
     return local_claim
 
+def append_delta(state, operation, data):
+
+    delta_log = state.setdefault(
+        "delta_log",
+        []
+    )
+
+    delta_log.append({
+        "timestamp": time.time(),
+        "operation": operation,
+        "data": data,
+        "version_vector": dict(
+            state.get("version_vector", {})
+        )
+    })
+
+    state["delta_log"] = delta_log[-100:]
+
 async def gossip_digest_loop():
     while True:
 
@@ -769,6 +788,45 @@ async def send_job_sync(job_id):
             }
         })
 
+async def send_job_delta_sync(job_id):
+
+    state = job_cache.get(job_id)
+
+    if not state:
+        return
+
+    if state.get("status") == "completed":
+        return
+
+    peers = list(known_peers)
+
+    if not peers:
+        return
+
+    deltas = state.get(
+        "delta_log",
+        []
+    )[-20:]
+
+    if not deltas:
+        return
+
+    selected_peers = random.sample(
+        peers,
+        min(2, len(peers))
+    )
+
+    for peer_id in selected_peers:
+
+        await enqueue_message({
+            "type": "direct_message",
+            "payload": {
+                "target": peer_id,
+                "action": "job_delta_sync",
+                "job_id": job_id,
+                "deltas": deltas
+            }
+        })
 
 async def cleanup_job_cache(job_id):
     await asyncio.sleep(60)
@@ -830,8 +888,15 @@ async def verification_timeout_loop():
                 state["claims"].pop(chunk, None)
                 owned_claims.pop((job_id, chunk), None)
                 save_owned_claims()
-                state["last_updated"] = time.time()
                 increment_version_vector(state)
+                append_delta(
+                    state,
+                    "chunk_requeue",
+                    {
+                        "chunk": chunk
+                    }
+                )
+                state["last_updated"] = time.time()
                 await broadcast_action(
                     "chunk_requeue",
                     job_id=job_id,
@@ -1250,11 +1315,18 @@ async def execute_chunk_task(job_id, chunk):
             state = job_cache.get(job_id)
             if state and chunk not in state["completed"]:
                 state["completed"].add(chunk)
+                increment_version_vector(state)
+                append_delta(
+                    state,
+                    "complete_chunk",
+                    {
+                        "chunk": chunk
+                    }
+                )
                 state["claims"].pop(chunk, None)
                 owned_claims.pop((job_id, chunk), None)
                 save_owned_claims()
                 state["last_updated"] = time.time()
-                increment_version_vector(state)
 
                 await broadcast_action(
                     "complete_chunk",
@@ -1301,8 +1373,7 @@ async def execute_chunk_task(job_id, chunk):
             state["cleanup_scheduled"] = True
             asyncio.create_task(cleanup_job_cache(job_id))
 
-    await send_job_sync(job_id)
-
+    await send_job_delta_sync(job_id)
 
 async def scheduler_loop():
     while True:
@@ -1362,6 +1433,14 @@ async def scheduler_loop():
             state["claims"][chunk] = claim
             state["last_updated"] = time.time()
             increment_version_vector(state)
+            append_delta(
+                state,
+                "claim_chunk",
+                {
+                    "chunk": chunk,
+                    "claim": claim
+                }
+            )
             owned_claims[(job_id, chunk)] = {
                 "timestamp": claim["timestamp"],
                 "epoch": claim["epoch"],
@@ -1520,6 +1599,13 @@ async def claim_cleanup_loop():
                 )
                 state["last_updated"] = time.time()
                 increment_version_vector(state)
+                append_delta(
+                    state,
+                    "chunk_requeue",
+                    {
+                        "chunk": chunk
+                    }
+                )
 
         if is_recovering:
 
@@ -1937,11 +2023,18 @@ async def connect_to_relay():
                                 state = init_job(job_id)
                                 if chunk not in state["completed"]:
                                     state["completed"].add(chunk)
+                                    increment_version_vector(state)
+                                    append_delta(
+                                        state,
+                                        "complete_chunk",
+                                        {
+                                            "chunk": chunk
+                                        }
+                                    )
                                     state["claims"].pop(chunk, None)
                                     owned_claims.pop((job_id, chunk), None)
                                     save_owned_claims()
                                     state["last_updated"] = time.time()
-                                    increment_version_vector(state)
                                 else:
                                     logger.warning(
                                         f"[Consistency] Duplicate completion "
@@ -2032,8 +2125,15 @@ async def connect_to_relay():
                                             state["claims"].pop(chunk, None)
                                             owned_claims.pop((job_id, chunk), None)
                                             save_owned_claims()
-                                            state["last_updated"] = time.time()
                                             increment_version_vector(state)
+                                            append_delta(
+                                                state,
+                                                "chunk_requeue",
+                                                {
+                                                    "chunk": chunk
+                                                }
+                                            )
+                                            state["last_updated"] = time.time()                                            
                                             await broadcast_action(
                                                 "chunk_requeue",
                                                 job_id=job_id,
@@ -2086,11 +2186,18 @@ async def connect_to_relay():
                                     state = job_cache.get(job_id)
                                     if state and chunk not in state["completed"]:
                                         state["completed"].add(chunk)
+                                        increment_version_vector(state)
+                                        append_delta(
+                                            state,
+                                            "complete_chunk",
+                                            {
+                                                "chunk": chunk
+                                            }
+                                        )
                                         state["claims"].pop(chunk, None)
                                         owned_claims.pop((job_id, chunk), None)
                                         save_owned_claims()
-                                        state["last_updated"] = time.time()
-                                        increment_version_vector(state)
+                                        state["last_updated"] = time.time()                                        
                                         await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
 
                                     await enqueue_message({
@@ -2148,6 +2255,75 @@ async def connect_to_relay():
                                 local = init_job(job_id)
                                 merge_job_state(local, status)
                                 job_cache[job_id] = local
+
+                        elif action == "job_delta_sync":
+
+                            job_id = payload.get("job_id")
+                            deltas = payload.get("deltas", [])
+
+                            if not job_id:
+                                continue
+
+                            if not isinstance(deltas, list):
+                                continue
+
+                            state = init_job(job_id)
+
+                            for delta in deltas:
+
+                                if not isinstance(delta, dict):
+                                    continue
+
+                                operation = delta.get("operation")
+
+                                data = delta.get("data", {})
+
+                                if operation == "claim_chunk":
+
+                                    chunk = str(data.get("chunk"))
+
+                                    claim = data.get("claim")
+
+                                    if not chunk or not isinstance(claim, dict):
+                                        continue
+
+                                    if chunk in state["completed"]:
+                                        continue
+
+                                    local_claim = state["claims"].get(chunk)
+
+                                    winner = compare_claims(
+                                        local_claim,
+                                        claim
+                                    )
+
+                                    if winner is claim:
+
+                                        state["claims"][chunk] = claim
+
+                                elif operation == "complete_chunk":
+
+                                    chunk = str(data.get("chunk"))
+
+                                    if not chunk:
+                                        continue
+
+                                    state["completed"].add(chunk)
+
+                                    state["claims"].pop(chunk, None)
+
+                                elif operation == "chunk_requeue":
+
+                                    chunk = str(data.get("chunk"))
+
+                                    if not chunk:
+                                        continue
+
+                                    state["completed"].discard(chunk)
+
+                                    state["claims"].pop(chunk, None)
+
+                            state["last_updated"] = time.time()
 
                         elif action == "job_sync_request":
 
@@ -2325,8 +2501,15 @@ async def connect_to_relay():
                             state["claims"].pop(chunk, None)
                             owned_claims.pop((job_id, chunk), None)
                             save_owned_claims()
-                            state["last_updated"] = time.time()
                             increment_version_vector(state)
+                            append_delta(
+                                state,
+                                "chunk_requeue",
+                                {
+                                    "chunk": chunk
+                                }
+                            )
+                            state["last_updated"] = time.time()
                             remove_local_verification((job_id, chunk))
 
             except ws_exceptions.ConnectionClosed:
