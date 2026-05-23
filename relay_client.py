@@ -1133,6 +1133,14 @@ async def execute_chunk_task(job_id, chunk):
             current_claim["timestamp"] = time.time()
             current_state["last_updated"] = time.time()
             increment_version_vector(state)
+            append_delta(
+                state,
+                "claim_chunk",
+                {
+                    "chunk": chunk,
+                    "claim": current_claim
+                }
+            )
             owned_claims[(job_id, chunk)] = {
                 "timestamp": current_claim["timestamp"],
                 "epoch": current_claim["epoch"],
@@ -2013,7 +2021,6 @@ async def connect_to_relay():
                                     )
 
                                 state["last_updated"] = time.time()
-                                increment_version_vector(state)
 
                             elif action == "complete_chunk":
                                 job_id = payload.get("job_id")
@@ -2023,14 +2030,6 @@ async def connect_to_relay():
                                 state = init_job(job_id)
                                 if chunk not in state["completed"]:
                                     state["completed"].add(chunk)
-                                    increment_version_vector(state)
-                                    append_delta(
-                                        state,
-                                        "complete_chunk",
-                                        {
-                                            "chunk": chunk
-                                        }
-                                    )
                                     state["claims"].pop(chunk, None)
                                     owned_claims.pop((job_id, chunk), None)
                                     save_owned_claims()
@@ -2246,7 +2245,6 @@ async def connect_to_relay():
 
                                 save_owned_claims()
                                 state["last_updated"] = time.time()
-                                increment_version_vector(state)
 
                         elif action == "job_sync":
                             job_id = payload.get("job_id")
@@ -2277,6 +2275,22 @@ async def connect_to_relay():
                                 operation = delta.get("operation")
 
                                 data = delta.get("data", {})
+                                delta_vector = delta.get(
+                                    "version_vector",
+                                    {}
+                                )
+
+                                merged_vector = state.setdefault(
+                                    "version_vector",
+                                    {}
+                                )
+
+                                for node_id, counter in delta_vector.items():
+
+                                    merged_vector[node_id] = max(
+                                        merged_vector.get(node_id, 0),
+                                        counter
+                                    )
 
                                 if operation == "claim_chunk":
 
@@ -2501,14 +2515,6 @@ async def connect_to_relay():
                             state["claims"].pop(chunk, None)
                             owned_claims.pop((job_id, chunk), None)
                             save_owned_claims()
-                            increment_version_vector(state)
-                            append_delta(
-                                state,
-                                "chunk_requeue",
-                                {
-                                    "chunk": chunk
-                                }
-                            )
                             state["last_updated"] = time.time()
                             remove_local_verification((job_id, chunk))
 
