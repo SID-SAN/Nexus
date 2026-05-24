@@ -7,6 +7,7 @@ import os
 import time
 import random
 import re
+import uuid
 from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
 from node.downloader import download_job
@@ -436,6 +437,7 @@ def init_job(job_id, total_chunks=0, chunk_data_map=None):
         "total_chunks": total_chunks,
         "last_sync": 0,
         "last_updated": time.time(),
+        "applied_deltas": set(),
         "version_vector": {},
         "conflicts": [],
         "delta_log": []
@@ -686,6 +688,7 @@ def append_delta(state, operation, data):
     )
 
     delta_log.append({
+        "delta_id": str(uuid.uuid4()),
         "timestamp": time.time(),
         "operation": operation,
         "data": data,
@@ -2271,6 +2274,36 @@ async def connect_to_relay():
 
                                 if not isinstance(delta, dict):
                                     continue
+
+                                delta_id = delta.get("delta_id")
+
+                                if not delta_id:
+                                    continue
+
+                                applied = state.setdefault(
+                                    "applied_deltas",
+                                    set()
+                                )
+
+                                if delta_id in applied:
+
+                                    logger.debug(
+                                        f"[DeltaSync] Duplicate delta ignored "
+                                        f"job={job_id} "
+                                        f"delta={delta_id}"
+                                    )
+
+                                    continue
+
+                                applied.add(delta_id)
+
+                                if len(applied) > 500:
+
+                                    applied_list = list(applied)[-500:]
+
+                                    state["applied_deltas"] = set(
+                                        applied_list
+                                    )
 
                                 operation = delta.get("operation")
 
