@@ -8,6 +8,7 @@ import time
 import random
 import re
 import uuid
+import hashlib
 from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
 from node.downloader import download_job
@@ -420,10 +421,42 @@ def build_job_digest():
             "version_vector": state.get(
                 "version_vector",
                 {}
+            ),
+            "merkle": compute_job_merkle(
+                job_id,
+                state
             )
         }
 
     return digest
+
+def compute_job_merkle(job_id, state):
+
+    payload = {
+        "completed": sorted(
+            list(state.get("completed", []))
+        ),
+        "claims": {
+            str(k): v
+            for k, v in sorted(
+                state.get("claims", {}).items()
+            )
+        },
+        "version_vector": state.get(
+            "version_vector",
+            {}
+        ),
+        "status": state.get("status")
+    }
+
+    serialized = json.dumps(
+        payload,
+        sort_keys=True
+    )
+
+    return hashlib.sha256(
+        serialized.encode()
+    ).hexdigest()
 
 def init_job(job_id, total_chunks=0, chunk_data_map=None):
     state = job_cache.setdefault(job_id, {
@@ -2462,6 +2495,17 @@ async def connect_to_relay():
                                         }
                                     })
                                     continue
+
+                                remote_merkle = remote_state.get("merkle")
+                                local_merkle = local_state.get("merkle")
+
+                                if remote_merkle == local_merkle:
+                                    continue
+                                else:
+                                    logger.debug(
+                                        f"[Merkle] Divergence detected "
+                                        f"job={job_id}"
+                                    )
 
                                 remote_vector = remote_state.get(
                                     "version_vector",
