@@ -13,7 +13,7 @@ from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
 from node.downloader import download_job
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
-from config import RELAY_URLS
+from config import NODE_ID, RELAY_URLS
 from logger import setup_logger
 from chaos import (
     chaos_enabled,
@@ -41,6 +41,8 @@ recovering_tasks = 0
 MAX_RETRIES = 5
 download_locks = {}
 owned_claims = {}
+peer_connections = {}
+peer_server = None
 relay_connected = False
 startup_recovery_done = False
 chaos_frozen_chunks = set()
@@ -387,7 +389,8 @@ async def enqueue_runtime_snapshot():
             "active_chunks": current_active,
             "known_peers": len(known_peers),
             "relay": current_relay
-        }
+        },
+        "peer_port": 8765
     })
 
 
@@ -854,15 +857,18 @@ async def send_job_delta_sync(job_id):
 
     for peer_id in selected_peers:
 
-        await enqueue_message({
-            "type": "direct_message",
-            "payload": {
-                "target": peer_id,
-                "action": "job_delta_sync",
-                "job_id": job_id,
-                "deltas": deltas
+        await send_direct_or_relay(
+            peer_id,
+            {
+                "type": "direct_message",
+                "payload": {
+                    "target": peer_id,
+                    "action": "job_delta_sync",
+                    "job_id": job_id,
+                    "deltas": deltas
+                }
             }
-        })
+        )
 
 async def cleanup_job_cache(job_id):
     await asyncio.sleep(60)
@@ -1846,6 +1852,19 @@ async def connect_to_relay():
     global last_relay_warning
     global relay_connected
     global startup_recovery_done
+    global peer_server
+
+    if peer_server is None:
+
+        peer_server = await websockets.serve(
+            peer_server_handler,
+            "0.0.0.0",
+            8765
+        )
+
+        logger.info(
+            "[PeerMesh] Direct peer server started"
+        )
 
     while True:
         node_id = get_node_id()
@@ -1941,659 +1960,7 @@ async def connect_to_relay():
                                     f"message={partition_key}"
                                 )
                                 continue
-                        msg_type = data.get("type")
-
-                        if msg_type == "heartbeat":
-                            await enqueue_runtime_snapshot()
-
-                        elif msg_type == "heartbeat_ack":
-
-                            source = data.get("source")
-
-                            payload = data.get("payload", {})
-
-                            if source:
-
-                                peer_runtime[source] = {
-                                    "status": payload.get("status"),
-                                    "active_chunks": payload.get(
-                                        "active_chunks",
-                                        0
-                                    ),
-                                    "known_peers": payload.get(
-                                        "known_peers",
-                                        0
-                                    ),
-                                    "relay": payload.get("relay"),
-                                    "timestamp": time.time()
-                                }
-
-                        elif msg_type == "peer_list":
-                            peers = data.get("nodes", [])
-                            self_id = get_node_id()
-                            for peer in peers:
-                                if peer != self_id:
-                                    add_peer(peer)
-
-                        elif msg_type == "job_manifest":
-                            payload = data.get("payload", {})
-                            job_id = payload.get("job_id")
-                            if not job_id or not is_valid_job_id(job_id):
-                                continue
-
-                            total_chunks = int(payload.get("total_chunks", 0) or 0)
-                            chunk_data_raw = payload.get("chunk_data", {})
-                            chunk_data = validate_chunk_data(chunk_data_raw)
-                            state = init_job(job_id, total_chunks=total_chunks, chunk_data_map=chunk_data)
-                            state["status"] = "running"
-                            state["last_updated"] = time.time()
-                            increment_version_vector(state)
-
-                        elif msg_type == "cleanup_job":
-                            payload = data.get("payload", {})
-                            job_id = payload.get("job_id")
-                            if job_id and is_valid_job_id(job_id):
-                                await asyncio.to_thread(cleanup_job_files, job_id)
-
-                                job_cache.pop(job_id, None)
-                                download_locks.pop(job_id, None)
-                                stale_claims = [
-                                    key for key in owned_claims
-                                    if key[0] == job_id
-                                ]
-
-                                for key in stale_claims:
-                                    owned_claims.pop(key, None)
-
-                                save_owned_claims()
-
-                                stale_keys = [
-                                    key for key in local_verifications
-                                    if key[0] == job_id
-                                ]
-
-                                for key in stale_keys:
-                                    remove_local_verification(key)
-
-                        elif msg_type == "direct_message":
-                            payload = data.get("payload", {})
-                            source = data.get("source")
-                            action = payload.get("action")
-                            if action == "claim_chunk":
-                                job_id = payload.get("job_id")
-                                chunk = str(payload.get("chunk"))
-                                if job_id is None or chunk is None:
-                                    continue
-                                state = init_job(job_id)
-                                incoming_claim = {
-                                    "owner": payload.get("owner"),
-                                    "timestamp": payload.get("timestamp", 0),
-                                    "epoch": payload.get("epoch", 0)
-                                }
-                                local_claim = state["claims"].get(chunk)
-                                if chunk in state["completed"]:
-                                    continue
-
-                                winner = compare_claims(
-                                    local_claim,
-                                    incoming_claim
-                                )
-
-                                if winner is incoming_claim:
-
-                                    state["claims"][chunk] = incoming_claim
-
-                                    logger.debug(
-                                        f"[Claims] Accepted claim "
-                                        f"chunk={chunk} "
-                                        f"owner={incoming_claim['owner']}"
-                                    )
-
-                                else:
-
-                                    logger.debug(
-                                        f"[Claims] Rejected stale claim "
-                                        f"chunk={chunk}"
-                                    )
-
-                                state["last_updated"] = time.time()
-
-                            elif action == "complete_chunk":
-                                job_id = payload.get("job_id")
-                                chunk = str(payload.get("chunk"))
-                                if job_id is None or chunk is None:
-                                    continue
-                                state = init_job(job_id)
-                                if chunk not in state["completed"]:
-                                    state["completed"].add(chunk)
-                                    state["claims"].pop(chunk, None)
-                                    owned_claims.pop((job_id, chunk), None)
-                                    save_owned_claims()
-                                    state["last_updated"] = time.time()
-                                else:
-                                    logger.warning(
-                                        f"[Consistency] Duplicate completion "
-                                        f"job={job_id} chunk={chunk}"
-                                    )
-
-                            elif action == "verify_chunk":
-                                job_id = payload.get("job_id")
-                                chunk = str(payload.get("chunk"))
-                                if job_id is None or chunk is None or not source:
-                                    continue
-                                asyncio.create_task(execute_verify_chunk(job_id, chunk, source))
-
-                            elif action == "verify_result":
-                                job_id = payload.get("job_id")
-                                chunk = str(payload.get("chunk"))
-                                verification_key = (job_id, str(chunk))
-                                verification = local_verifications.get(verification_key)
-
-                                if not verification:
-                                    continue
-                                if source not in verification.get("verifiers", []):
-
-                                    logger.warning(
-                                        f"[VERIFY] Ignoring unauthorized verifier "
-                                        f"{source} for chunk {chunk}"
-                                    )
-
-                                    continue
-
-                                original_result = str(
-                                    verification["original_result"]
-                                ).strip()
-                                verify_result = str(
-                                    payload.get("result")
-                                ).strip()
-                                verification.setdefault("responses", {})
-                                if source in verification["responses"]:
-                                    continue
-                                verification["responses"][source] = {
-                                    "status": payload.get("status"),
-                                    "result": verify_result
-                                }
-
-                                matching = 0
-                                for response in verification["responses"].values():
-                                    if (
-                                        response.get("status") == "success"
-                                        and response.get("result") == original_result
-                                    ):
-                                        matching += 1
-
-                                if matching < verification["required_agreement"]:
-                                    total_responses = len(verification["responses"])
-
-                                    if total_responses >= len(verification["verifiers"]):
-                                        async with metrics_lock:
-                                            verify_mismatch_count += 1
-
-                                        logger.warning(
-                                            f"[Consensus] Quorum failed "
-                                            f"job={job_id} chunk={chunk}"
-                                        )
-
-                                        for verifier_id, response in verification["responses"].items():
-                                            if (
-                                                response.get("result") != original_result
-                                            ):
-                                                score = get_peer_score(verifier_id)
-
-                                                score["mismatches"] = (
-                                                    score.get("mismatches", 0) + 1
-                                                )
-
-                                                current = score.get(
-                                                    "trust",
-                                                    DEFAULT_TRUST_SCORE
-                                                )
-
-                                                score["trust"] = max(
-                                                    TRUST_MIN_SCORE,
-                                                    current - TRUST_PENALTY_MISMATCH
-                                                )
-
-                                        state = job_cache.get(job_id)
-                                        if state:
-                                            state["completed"].discard(chunk)
-                                            state["claims"].pop(chunk, None)
-                                            owned_claims.pop((job_id, chunk), None)
-                                            save_owned_claims()
-                                            increment_version_vector(state)
-                                            append_delta(
-                                                state,
-                                                "chunk_requeue",
-                                                {
-                                                    "chunk": chunk
-                                                }
-                                            )
-                                            state["last_updated"] = time.time()                                            
-                                            await broadcast_action(
-                                                "chunk_requeue",
-                                                job_id=job_id,
-                                                chunk=chunk
-                                            )
-                                            remove_local_verification(verification_key)
-
-                                    else:
-                                        logger.info(
-                                            f"[VERIFY] Waiting quorum "
-                                            f"chunk={chunk} "
-                                            f"matches={matching}"
-                                        )
-
-                                    continue
-
-                                if matching >= verification["required_agreement"]:
-                                    if verification.get("finalized"):
-                                        continue
-                                    verification["finalized"] = True
-
-                                    for verifier_id, response in verification["responses"].items():
-                                        if (
-                                            response.get("status") == "success"
-                                            and response.get("result") == original_result
-                                        ):
-                                            score = get_peer_score(verifier_id)
-
-                                            score["success"] = score.get("success", 0) + 1
-
-                                            current = score.get(
-                                                "trust",
-                                                DEFAULT_TRUST_SCORE
-                                            )
-
-                                            score["trust"] = min(
-                                                TRUST_MAX_SCORE,
-                                                current + TRUST_REWARD
-                                            )
-
-                                    async with metrics_lock:
-                                        verify_success_count += 1
-                                    logger.debug(
-                                        f"[VERIFY] Quorum verified chunk {chunk} "
-                                        f"for job {job_id} matches={matching}"
-                                    )
-                                    remove_local_verification(verification_key)
-
-
-                                    state = job_cache.get(job_id)
-                                    if state and chunk not in state["completed"]:
-                                        state["completed"].add(chunk)
-                                        increment_version_vector(state)
-                                        append_delta(
-                                            state,
-                                            "complete_chunk",
-                                            {
-                                                "chunk": chunk
-                                            }
-                                        )
-                                        state["claims"].pop(chunk, None)
-                                        owned_claims.pop((job_id, chunk), None)
-                                        save_owned_claims()
-                                        state["last_updated"] = time.time()                                        
-                                        await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
-
-                                    await enqueue_message({
-                                        "type": "submit_result",
-                                        "source": get_node_id(),
-                                        "payload": {
-                                            "job_id": job_id,
-                                            "chunk": str(chunk),
-                                            "status": "success",
-                                            "result": verification["original_result"],
-                                            "logs": verification.get("logs", ""),
-                                            "error": ""
-                                        }
-                                    })
-                                    state = job_cache.get(job_id)
-
-                                    if state:
-                                        total_chunks = state.get("total_chunks", 0)
-
-                                        if total_chunks and len(state["completed"]) >= total_chunks:
-                                            state["status"] = "completed"
-
-                                            await broadcast_action(
-                                                "job_complete",
-                                                job_id=job_id
-                                            )
-
-                                            if not state.get("cleanup_scheduled"):
-                                                state["cleanup_scheduled"] = True
-                                                asyncio.create_task(cleanup_job_cache(job_id))
-
-                        elif action == "job_complete":
-                            job_id = payload.get("job_id")
-
-                            if job_id:
-                                state = init_job(job_id)
-                                state["status"] = "completed"
-                                state["claims"].clear()
-                                stale_claims = [
-                                    key for key in owned_claims
-                                    if key[0] == job_id
-                                ]
-
-                                for key in stale_claims:
-                                    owned_claims.pop(key, None)
-
-                                save_owned_claims()
-                                state["last_updated"] = time.time()
-
-                        elif action == "job_sync":
-                            job_id = payload.get("job_id")
-                            status = payload.get("status")
-                            if job_id and status:
-                                local = init_job(job_id)
-                                merge_job_state(local, status)
-                                job_cache[job_id] = local
-
-                        elif action == "job_delta_sync":
-
-                            job_id = payload.get("job_id")
-                            deltas = payload.get("deltas", [])
-
-                            if not job_id:
-                                continue
-
-                            if not isinstance(deltas, list):
-                                continue
-
-                            state = init_job(job_id)
-
-                            for delta in deltas:
-
-                                if not isinstance(delta, dict):
-                                    continue
-
-                                delta_id = delta.get("delta_id")
-
-                                if not delta_id:
-                                    continue
-
-                                applied = state.setdefault(
-                                    "applied_deltas",
-                                    set()
-                                )
-
-                                if delta_id in applied:
-
-                                    logger.debug(
-                                        f"[DeltaSync] Duplicate delta ignored "
-                                        f"job={job_id} "
-                                        f"delta={delta_id}"
-                                    )
-
-                                    continue
-
-                                applied.add(delta_id)
-
-                                if len(applied) > 500:
-
-                                    applied_list = list(applied)[-500:]
-
-                                    state["applied_deltas"] = set(
-                                        applied_list
-                                    )
-
-                                operation = delta.get("operation")
-
-                                data = delta.get("data", {})
-                                delta_vector = delta.get(
-                                    "version_vector",
-                                    {}
-                                )
-
-                                merged_vector = state.setdefault(
-                                    "version_vector",
-                                    {}
-                                )
-
-                                for node_id, counter in delta_vector.items():
-
-                                    merged_vector[node_id] = max(
-                                        merged_vector.get(node_id, 0),
-                                        counter
-                                    )
-
-                                if operation == "claim_chunk":
-
-                                    chunk = str(data.get("chunk"))
-
-                                    claim = data.get("claim")
-
-                                    if not chunk or not isinstance(claim, dict):
-                                        continue
-
-                                    if chunk in state["completed"]:
-                                        continue
-
-                                    local_claim = state["claims"].get(chunk)
-
-                                    winner = compare_claims(
-                                        local_claim,
-                                        claim
-                                    )
-
-                                    if winner is claim:
-
-                                        state["claims"][chunk] = claim
-
-                                elif operation == "complete_chunk":
-
-                                    chunk = str(data.get("chunk"))
-
-                                    if not chunk:
-                                        continue
-
-                                    state["completed"].add(chunk)
-
-                                    state["claims"].pop(chunk, None)
-
-                                elif operation == "chunk_requeue":
-
-                                    chunk = str(data.get("chunk"))
-
-                                    if not chunk:
-                                        continue
-
-                                    state["completed"].discard(chunk)
-
-                                    state["claims"].pop(chunk, None)
-
-                            state["last_updated"] = time.time()
-
-                        elif action == "job_sync_request":
-
-                            job_id = payload.get("job_id")
-
-                            if not job_id:
-                                continue
-
-                            state = job_cache.get(job_id)
-
-                            if not state:
-                                continue
-
-                            await enqueue_message({
-                                "type": "direct_message",
-                                "payload": {
-                                    "target": source,
-                                    "action": "job_sync",
-                                    "job_id": job_id,
-                                    "status": build_job_state(state)
-                                }
-                            })
-
-                        elif action == "job_cleanup":
-                            job_id = payload.get("job_id")
-                            if job_id:
-                                await asyncio.to_thread(cleanup_job_files, job_id)
-                                job_cache.pop(job_id, None)
-                                download_locks.pop(job_id, None)
-                                stale_claims = [
-                                    key for key in owned_claims
-                                    if key[0] == job_id
-                                ]
-                                for key in stale_claims:
-                                    owned_claims.pop(key, None)
-                                save_owned_claims()
-
-                                stale_keys = [
-                                    key for key in local_verifications
-                                    if key[0] == job_id
-                                ]
-                                for key in stale_keys:
-                                    remove_local_verification(key)
-
-                        elif action == "peer_exchange":
-                            if source:
-                                add_peer(source)
-                            else:
-                                continue
-                            peers = payload.get("peers", [])
-
-                            if isinstance(peers, list):
-                                for peer_id in peers:
-                                    if isinstance(peer_id, str):
-                                        add_peer(peer_id)
-
-                        elif action == "digest_gossip":
-
-                            incoming_digest = payload.get(
-                                "digest",
-                                {}
-                            )
-
-                            if not isinstance(incoming_digest, dict):
-                                continue
-
-                            local_digest = build_job_digest()
-
-                            for job_id, remote_state in incoming_digest.items():
-
-                                if not isinstance(remote_state, dict):
-                                    continue
-
-                                local_state = local_digest.get(job_id)
-
-                                if not local_state:
-
-                                    logger.info(
-                                        f"[Gossip] Missing job discovered "
-                                        f"job={job_id}"
-                                    )
-
-                                    await enqueue_message({
-                                        "type": "direct_message",
-                                        "payload": {
-                                            "target": source,
-                                            "action": "job_sync_request",
-                                            "job_id": job_id
-                                        }
-                                    })
-                                    continue
-
-                                remote_merkle = remote_state.get("merkle")
-                                local_merkle = local_state.get("merkle")
-
-                                if remote_merkle == local_merkle:
-                                    continue
-                                else:
-                                    logger.debug(
-                                        f"[Merkle] Divergence detected "
-                                        f"job={job_id}"
-                                    )
-
-                                remote_vector = remote_state.get(
-                                    "version_vector",
-                                    {}
-                                )
-
-                                local_vector = local_state.get(
-                                    "version_vector",
-                                    {}
-                                )
-
-                                vector_result = compare_version_vectors(
-                                    remote_vector,
-                                    local_vector
-                                )
-
-                                if vector_result == "newer":
-
-                                    logger.info(
-                                        f"[Gossip] Remote vector newer "
-                                        f"job={job_id}"
-                                    )
-
-                                    await enqueue_message({
-                                        "type": "direct_message",
-                                        "payload": {
-                                            "target": source,
-                                            "action": "job_sync_request",
-                                            "job_id": job_id
-                                        }
-                                    })
-
-                                elif vector_result == "older":
-
-                                    logger.info(
-                                        f"[Gossip] Local vector newer "
-                                        f"job={job_id}"
-                                    )
-
-                                    await enqueue_message({
-                                        "type": "direct_message",
-                                        "payload": {
-                                            "target": source,
-                                            "action": "job_sync",
-                                            "job_id": job_id,
-                                            "status": build_job_state(
-                                                job_cache[job_id]
-                                            )
-                                        }
-                                    })
-
-                                elif vector_result == "concurrent":
-
-                                    logger.warning(
-                                        f"[Gossip] Concurrent divergence "
-                                        f"job={job_id}"
-                                    )
-
-                                    await enqueue_message({
-                                        "type": "direct_message",
-                                        "payload": {
-                                            "target": source,
-                                            "action": "job_sync_request",
-                                            "job_id": job_id
-                                        }
-                                    })
-                                    logger.warning(
-                                        f"[AntiEntropy] Split-brain divergence "
-                                        f"detected for job={job_id}"
-                                    )
-
-                        elif action == "chunk_requeue":
-                            job_id = payload.get("job_id")
-                            chunk = str(payload.get("chunk"))
-
-                            if job_id is None or chunk is None:
-                                continue
-
-                            state = init_job(job_id)
-                            if state.get("status") == "completed":
-                                continue
-
-                            state["completed"].discard(chunk)
-                            state["claims"].pop(chunk, None)
-                            owned_claims.pop((job_id, chunk), None)
-                            save_owned_claims()
-                            state["last_updated"] = time.time()
-                            remove_local_verification((job_id, chunk))
+                        await handle_direct_peer_message(data)
 
             except ws_exceptions.ConnectionClosed:
                 websocket_connection = None
@@ -2631,3 +1998,813 @@ async def connect_to_relay():
         await asyncio.sleep(
             random.uniform(2, 8)
         )
+
+async def peer_server_handler(websocket):
+
+    try:
+
+        async for message in websocket:
+
+            data = json.loads(message)
+
+            payload = data.get("payload", {})
+
+            source = (
+                data.get("source")
+                or payload.get("source")
+            )
+            if source:
+                peer_connections[source] = websocket
+
+            await handle_direct_peer_message(data)
+
+    except Exception:
+        pass
+
+async def connect_to_peer(
+    peer_id,
+    host,
+    port
+):
+
+    if peer_id in peer_connections:
+        return
+
+    try:
+
+        ws = await websockets.connect(
+            f"ws://{host}:{port}"
+        )
+
+        peer_connections[peer_id] = ws
+
+        asyncio.create_task(
+            listen_to_peer(
+                peer_id,
+                ws
+            )
+        )
+
+        logger.info(
+            f"[PeerMesh] Connected "
+            f"peer={peer_id}"
+        )
+
+    except Exception:
+
+        logger.warning(
+            f"[PeerMesh] Connection failed "
+            f"peer={peer_id}"
+        )
+
+async def listen_to_peer(
+    peer_id,
+    websocket
+):
+
+    try:
+
+        async for message in websocket:
+
+            data = json.loads(message)
+
+            await handle_direct_peer_message(
+                data
+            )
+
+    except Exception:
+
+        peer_connections.pop(
+            peer_id,
+            None
+        )
+
+        logger.warning(
+            f"[PeerMesh] Lost peer "
+            f"peer={peer_id}"
+        )
+
+async def send_direct_or_relay(
+    target,
+    payload
+):
+
+    peer_ws = peer_connections.get(
+        target
+    )
+
+    if peer_ws:
+
+        try:
+
+            direct_payload = dict(payload)
+
+            direct_payload["source"] = NODE_ID
+
+            await peer_ws.send(
+                json.dumps(direct_payload)
+            )
+
+            logger.debug(
+                f"[PeerMesh] Direct send "
+                f"target={target}"
+            )
+
+            return
+
+        except Exception:
+
+            logger.warning(
+                f"[PeerMesh] Direct send failed "
+                f"target={target}"
+            )
+
+            peer_connections.pop(
+                target,
+                None
+            )
+
+    for peer_id in list(known_peers):
+
+        direct_payload = {
+            "type": "direct_message",
+            "payload": {
+                "target": peer_id,
+                "action": action,
+                **kwargs
+            }
+        }
+
+        await send_direct_or_relay(
+            peer_id,
+            direct_payload
+        )
+        
+async def handle_direct_peer_message(data):
+    global verify_success_count, verify_mismatch_count
+
+    msg_type = data.get("type")
+    if msg_type == "heartbeat":
+        await enqueue_runtime_snapshot()
+
+    elif msg_type == "heartbeat_ack":
+
+        source = data.get("source")
+
+        payload = data.get("payload", {})
+
+        if source:
+
+            peer_runtime[source] = {
+                "status": payload.get("status"),
+                "active_chunks": payload.get(
+                    "active_chunks",
+                    0
+                ),
+                "known_peers": payload.get(
+                    "known_peers",
+                    0
+                ),
+                "relay": payload.get("relay"),
+                "timestamp": time.time(),
+                "peer_port": payload.get("peer_port"),
+            }
+
+            peer_port = payload.get("peer_port")
+
+            if peer_port:
+
+                asyncio.create_task(
+                    connect_to_peer(
+                        source,
+                        "localhost",
+                        peer_port
+                    )
+                )
+
+    elif msg_type == "peer_list":
+        peers = data.get("nodes", [])
+        self_id = get_node_id()
+        for peer in peers:
+            if peer != self_id:
+                add_peer(peer)
+
+    elif msg_type == "job_manifest":
+        payload = data.get("payload", {})
+        job_id = payload.get("job_id")
+        if not job_id or not is_valid_job_id(job_id):
+            return
+
+        total_chunks = int(payload.get("total_chunks", 0) or 0)
+        chunk_data_raw = payload.get("chunk_data", {})
+        chunk_data = validate_chunk_data(chunk_data_raw)
+        state = init_job(job_id, total_chunks=total_chunks, chunk_data_map=chunk_data)
+        state["status"] = "running"
+        state["last_updated"] = time.time()
+        increment_version_vector(state)
+
+    elif msg_type == "cleanup_job":
+        payload = data.get("payload", {})
+        job_id = payload.get("job_id")
+        if job_id and is_valid_job_id(job_id):
+            await asyncio.to_thread(cleanup_job_files, job_id)
+
+            job_cache.pop(job_id, None)
+            download_locks.pop(job_id, None)
+            stale_claims = [
+                key for key in owned_claims
+                if key[0] == job_id
+            ]
+
+            for key in stale_claims:
+                owned_claims.pop(key, None)
+
+            save_owned_claims()
+
+            stale_keys = [
+                key for key in local_verifications
+                if key[0] == job_id
+            ]
+
+            for key in stale_keys:
+                remove_local_verification(key)
+
+    elif msg_type == "direct_message":
+        payload = data.get("payload", {})
+        source = data.get("source")
+        action = payload.get("action")
+        if action == "claim_chunk":
+            job_id = payload.get("job_id")
+            chunk = str(payload.get("chunk"))
+            if job_id is None or chunk is None:
+                return
+            state = init_job(job_id)
+            incoming_claim = {
+                "owner": payload.get("owner"),
+                "timestamp": payload.get("timestamp", 0),
+                "epoch": payload.get("epoch", 0)
+            }
+            local_claim = state["claims"].get(chunk)
+            if chunk in state["completed"]:
+                return
+
+            winner = compare_claims(
+                local_claim,
+                incoming_claim
+            )
+
+            if winner is incoming_claim:
+
+                state["claims"][chunk] = incoming_claim
+
+                logger.debug(
+                    f"[Claims] Accepted claim "
+                    f"chunk={chunk} "
+                    f"owner={incoming_claim['owner']}"
+                )
+
+            else:
+
+                logger.debug(
+                    f"[Claims] Rejected stale claim "
+                    f"chunk={chunk}"
+                )
+
+            state["last_updated"] = time.time()
+
+        elif action == "complete_chunk":
+            job_id = payload.get("job_id")
+            chunk = str(payload.get("chunk"))
+            if job_id is None or chunk is None:
+                return
+            state = init_job(job_id)
+            if chunk not in state["completed"]:
+                state["completed"].add(chunk)
+                state["claims"].pop(chunk, None)
+                owned_claims.pop((job_id, chunk), None)
+                save_owned_claims()
+                state["last_updated"] = time.time()
+            else:
+                logger.warning(
+                    f"[Consistency] Duplicate completion "
+                    f"job={job_id} chunk={chunk}"
+                )
+
+        elif action == "verify_chunk":
+            job_id = payload.get("job_id")
+            chunk = str(payload.get("chunk"))
+            if job_id is None or chunk is None or not source:
+                return
+            asyncio.create_task(execute_verify_chunk(job_id, chunk, source))
+
+        elif action == "verify_result":
+            job_id = payload.get("job_id")
+            chunk = str(payload.get("chunk"))
+            verification_key = (job_id, str(chunk))
+            verification = local_verifications.get(verification_key)
+
+            if not verification:
+                return
+            if source not in verification.get("verifiers", []):
+
+                logger.warning(
+                    f"[VERIFY] Ignoring unauthorized verifier "
+                    f"{source} for chunk {chunk}"
+                )
+
+                return
+
+            original_result = str(
+                verification["original_result"]
+            ).strip()
+            verify_result = str(
+                payload.get("result")
+            ).strip()
+            verification.setdefault("responses", {})
+            if source in verification["responses"]:
+                return
+            verification["responses"][source] = {
+                "status": payload.get("status"),
+                "result": verify_result
+            }
+
+            matching = 0
+            for response in verification["responses"].values():
+                if (
+                    response.get("status") == "success"
+                    and response.get("result") == original_result
+                ):
+                    matching += 1
+
+            if matching < verification["required_agreement"]:
+                total_responses = len(verification["responses"])
+
+                if total_responses >= len(verification["verifiers"]):
+                    async with metrics_lock:
+                        verify_mismatch_count += 1
+
+                    logger.warning(
+                        f"[Consensus] Quorum failed "
+                        f"job={job_id} chunk={chunk}"
+                    )
+
+                    for verifier_id, response in verification["responses"].items():
+                        if (
+                            response.get("result") != original_result
+                        ):
+                            score = get_peer_score(verifier_id)
+
+                            score["mismatches"] = (
+                                score.get("mismatches", 0) + 1
+                            )
+
+                            current = score.get(
+                                "trust",
+                                DEFAULT_TRUST_SCORE
+                            )
+
+                            score["trust"] = max(
+                                TRUST_MIN_SCORE,
+                                current - TRUST_PENALTY_MISMATCH
+                            )
+
+                    state = job_cache.get(job_id)
+                    if state:
+                        state["completed"].discard(chunk)
+                        state["claims"].pop(chunk, None)
+                        owned_claims.pop((job_id, chunk), None)
+                        save_owned_claims()
+                        increment_version_vector(state)
+                        append_delta(
+                            state,
+                            "chunk_requeue",
+                            {
+                                "chunk": chunk
+                            }
+                        )
+                        state["last_updated"] = time.time()                                            
+                        await broadcast_action(
+                            "chunk_requeue",
+                            job_id=job_id,
+                            chunk=chunk
+                        )
+                        remove_local_verification(verification_key)
+
+                else:
+                    logger.info(
+                        f"[VERIFY] Waiting quorum "
+                        f"chunk={chunk} "
+                        f"matches={matching}"
+                    )
+
+                return
+
+            if matching >= verification["required_agreement"]:
+                if verification.get("finalized"):
+                    return
+                verification["finalized"] = True
+
+                for verifier_id, response in verification["responses"].items():
+                    if (
+                        response.get("status") == "success"
+                        and response.get("result") == original_result
+                    ):
+                        score = get_peer_score(verifier_id)
+
+                        score["success"] = score.get("success", 0) + 1
+
+                        current = score.get(
+                            "trust",
+                            DEFAULT_TRUST_SCORE
+                        )
+
+                        score["trust"] = min(
+                            TRUST_MAX_SCORE,
+                            current + TRUST_REWARD
+                        )
+
+                async with metrics_lock:
+                    verify_success_count += 1
+                logger.debug(
+                    f"[VERIFY] Quorum verified chunk {chunk} "
+                    f"for job {job_id} matches={matching}"
+                )
+                remove_local_verification(verification_key)
+
+                state = job_cache.get(job_id)
+                if state and chunk not in state["completed"]:
+                    state["completed"].add(chunk)
+                    increment_version_vector(state)
+                    append_delta(
+                        state,
+                        "complete_chunk",
+                        {
+                            "chunk": chunk
+                        }
+                    )
+                    state["claims"].pop(chunk, None)
+                    owned_claims.pop((job_id, chunk), None)
+                    save_owned_claims()
+                    state["last_updated"] = time.time()                                        
+                    await broadcast_action("complete_chunk", job_id=job_id, chunk=chunk)
+
+                await enqueue_message({
+                    "type": "submit_result",
+                    "source": get_node_id(),
+                    "payload": {
+                        "job_id": job_id,
+                        "chunk": str(chunk),
+                        "status": "success",
+                        "result": verification["original_result"],
+                        "logs": verification.get("logs", ""),
+                        "error": ""
+                    }
+                })
+                state = job_cache.get(job_id)
+
+                if state:
+                    total_chunks = state.get("total_chunks", 0)
+
+                    if total_chunks and len(state["completed"]) >= total_chunks:
+                        state["status"] = "completed"
+
+                        await broadcast_action(
+                            "job_complete",
+                            job_id=job_id
+                        )
+
+                        if not state.get("cleanup_scheduled"):
+                            state["cleanup_scheduled"] = True
+                            asyncio.create_task(cleanup_job_cache(job_id))
+
+        elif action == "job_complete":
+            job_id = payload.get("job_id")
+
+            if job_id:
+                state = init_job(job_id)
+                state["status"] = "completed"
+                state["claims"].clear()
+                stale_claims = [
+                    key for key in owned_claims
+                    if key[0] == job_id
+                ]
+
+                for key in stale_claims:
+                    owned_claims.pop(key, None)
+
+                save_owned_claims()
+                state["last_updated"] = time.time()
+
+        elif action == "job_sync":
+            job_id = payload.get("job_id")
+            status = payload.get("status")
+            if job_id and status:
+                local = init_job(job_id)
+                merge_job_state(local, status)
+                job_cache[job_id] = local
+
+        elif action == "job_delta_sync":
+
+            job_id = payload.get("job_id")
+            deltas = payload.get("deltas", [])
+
+            if not job_id:
+                return
+
+            if not isinstance(deltas, list):
+                return
+
+            state = init_job(job_id)
+
+            for delta in deltas:
+
+                if not isinstance(delta, dict):
+                    continue
+
+                delta_id = delta.get("delta_id")
+
+                if not delta_id:
+                    continue
+
+                applied = state.setdefault(
+                    "applied_deltas",
+                    set()
+                )
+
+                if delta_id in applied:
+
+                    logger.debug(
+                        f"[DeltaSync] Duplicate delta ignored "
+                        f"job={job_id} "
+                        f"delta={delta_id}"
+                    )
+
+                    continue
+
+                applied.add(delta_id)
+
+                if len(applied) > 500:
+
+                    applied_list = list(applied)[-500:]
+
+                    state["applied_deltas"] = set(
+                        applied_list
+                    )
+
+                operation = delta.get("operation")
+
+                data = delta.get("data", {})
+                delta_vector = delta.get(
+                    "version_vector",
+                    {}
+                )
+
+                merged_vector = state.setdefault(
+                    "version_vector",
+                    {}
+                )
+
+                for node_id, counter in delta_vector.items():
+
+                    merged_vector[node_id] = max(
+                        merged_vector.get(node_id, 0),
+                        counter
+                    )
+
+                if operation == "claim_chunk":
+
+                    chunk = str(data.get("chunk"))
+
+                    claim = data.get("claim")
+
+                    if not chunk or not isinstance(claim, dict):
+                        continue
+
+                    if chunk in state["completed"]:
+                        continue
+
+                    local_claim = state["claims"].get(chunk)
+
+                    winner = compare_claims(
+                        local_claim,
+                        claim
+                    )
+
+                    if winner is claim:
+
+                        state["claims"][chunk] = claim
+
+                elif operation == "complete_chunk":
+
+                    chunk = str(data.get("chunk"))
+
+                    if not chunk:
+                        continue
+
+                    state["completed"].add(chunk)
+
+                    state["claims"].pop(chunk, None)
+
+                elif operation == "chunk_requeue":
+
+                    chunk = str(data.get("chunk"))
+
+                    if not chunk:
+                        continue
+
+                    state["completed"].discard(chunk)
+
+                    state["claims"].pop(chunk, None)
+
+            state["last_updated"] = time.time()
+
+        elif action == "job_sync_request":
+
+            job_id = payload.get("job_id")
+
+            if not job_id:
+                return
+
+            state = job_cache.get(job_id)
+
+            if not state:
+                return
+
+            await enqueue_message({
+                "type": "direct_message",
+                "payload": {
+                    "target": source,
+                    "action": "job_sync",
+                    "job_id": job_id,
+                    "status": build_job_state(state)
+                }
+            })
+
+        elif action == "job_cleanup":
+            job_id = payload.get("job_id")
+            if job_id:
+                await asyncio.to_thread(cleanup_job_files, job_id)
+                job_cache.pop(job_id, None)
+                download_locks.pop(job_id, None)
+                stale_claims = [
+                    key for key in owned_claims
+                    if key[0] == job_id
+                ]
+                for key in stale_claims:
+                    owned_claims.pop(key, None)
+                save_owned_claims()
+
+                stale_keys = [
+                    key for key in local_verifications
+                    if key[0] == job_id
+                ]
+                for key in stale_keys:
+                    remove_local_verification(key)
+
+        elif action == "peer_exchange":
+            if source:
+                add_peer(source)
+            else:
+                return
+            peers = payload.get("peers", [])
+
+            if isinstance(peers, list):
+                for peer_id in peers:
+                    if isinstance(peer_id, str):
+                        add_peer(peer_id)
+
+        elif action == "digest_gossip":
+
+            incoming_digest = payload.get(
+                "digest",
+                {}
+            )
+
+            if not isinstance(incoming_digest, dict):
+                return
+
+            local_digest = build_job_digest()
+
+            for job_id, remote_state in incoming_digest.items():
+
+                if not isinstance(remote_state, dict):
+                    continue
+
+                local_state = local_digest.get(job_id)
+
+                if not local_state:
+
+                    logger.info(
+                        f"[Gossip] Missing job discovered "
+                        f"job={job_id}"
+                    )
+
+                    await enqueue_message({
+                        "type": "direct_message",
+                        "payload": {
+                            "target": source,
+                            "action": "job_sync_request",
+                            "job_id": job_id
+                        }
+                    })
+                    continue
+
+                remote_merkle = remote_state.get("merkle")
+                local_merkle = local_state.get("merkle")
+
+                if remote_merkle == local_merkle:
+                    continue
+                else:
+                    logger.debug(
+                        f"[Merkle] Divergence detected "
+                        f"job={job_id}"
+                    )
+
+                remote_vector = remote_state.get(
+                    "version_vector",
+                    {}
+                )
+
+                local_vector = local_state.get(
+                    "version_vector",
+                    {}
+                )
+
+                vector_result = compare_version_vectors(
+                    remote_vector,
+                    local_vector
+                )
+
+                if vector_result == "newer":
+
+                    logger.info(
+                        f"[Gossip] Remote vector newer "
+                        f"job={job_id}"
+                    )
+
+                    await enqueue_message({
+                        "type": "direct_message",
+                        "payload": {
+                            "target": source,
+                            "action": "job_sync_request",
+                            "job_id": job_id
+                        }
+                    })
+
+                elif vector_result == "older":
+
+                    logger.info(
+                        f"[Gossip] Local vector newer "
+                        f"job={job_id}"
+                    )
+
+                    await enqueue_message({
+                        "type": "direct_message",
+                        "payload": {
+                            "target": source,
+                            "action": "job_sync",
+                            "job_id": job_id,
+                            "status": build_job_state(
+                                job_cache[job_id]
+                            )
+                        }
+                    })
+
+                elif vector_result == "concurrent":
+
+                    logger.warning(
+                        f"[Gossip] Concurrent divergence "
+                        f"job={job_id}"
+                    )
+
+                    await enqueue_message({
+                        "type": "direct_message",
+                        "payload": {
+                            "target": source,
+                            "action": "job_sync_request",
+                            "job_id": job_id
+                        }
+                    })
+                    logger.warning(
+                        f"[AntiEntropy] Split-brain divergence "
+                        f"detected for job={job_id}"
+                    )
+
+        elif action == "chunk_requeue":
+            job_id = payload.get("job_id")
+            chunk = str(payload.get("chunk"))
+
+            if job_id is None or chunk is None:
+                return
+
+            state = init_job(job_id)
+            if state.get("status") == "completed":
+                return
+
+            state["completed"].discard(chunk)
+            state["claims"].pop(chunk, None)
+            owned_claims.pop((job_id, chunk), None)
+            save_owned_claims()
+            state["last_updated"] = time.time()
+            remove_local_verification((job_id, chunk))
+            
