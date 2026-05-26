@@ -817,15 +817,18 @@ async def send_job_sync(job_id):
     selected_peers = random.sample(peers, min(2, len(peers)))
     payload_state = build_job_state(state)
     for peer_id in selected_peers:
-        await enqueue_message({
-            "type": "direct_message",
-            "payload": {
-                "target": peer_id,
-                "action": "job_sync",
-                "job_id": job_id,
-                "status": payload_state
+        await send_direct_or_relay(
+            peer_id,
+            {
+                "type": "direct_message",
+                "payload": {
+                    "target": peer_id,
+                    "action": "job_sync",
+                    "job_id": job_id,
+                    "status": payload_state
+                }
             }
-        })
+        )
 
 async def send_job_delta_sync(job_id):
 
@@ -1088,14 +1091,17 @@ async def execute_verify_chunk(job_id, chunk, target_node):
             if verifying_tasks < 0:
                 verifying_tasks = 0
 
-    await enqueue_message({
-        "type": "direct_message",
-        "payload": {
-            "target": target_node,
-            "action": "verify_result",
-            **response_payload
+    await send_direct_or_relay(
+        target_node,
+        {
+            "type": "direct_message",
+            "payload": {
+                "target": target_node,
+                "action": "verify_result",
+                **response_payload
+            }
         }
-    })
+    )
 
 
 async def execute_chunk_task(job_id, chunk):
@@ -2124,21 +2130,8 @@ async def send_direct_or_relay(
                 None
             )
 
-    for peer_id in list(known_peers):
+    await enqueue_message(payload)
 
-        direct_payload = {
-            "type": "direct_message",
-            "payload": {
-                "target": peer_id,
-                "action": action,
-                **kwargs
-            }
-        }
-
-        await send_direct_or_relay(
-            peer_id,
-            direct_payload
-        )
         
 async def handle_direct_peer_message(data):
     global verify_success_count, verify_mismatch_count
