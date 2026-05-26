@@ -45,6 +45,7 @@ peer_connections = {}
 peer_server = None
 relay_connected = False
 startup_recovery_done = False
+peer_recovery_done = False
 chaos_frozen_chunks = set()
 
 logger = setup_logger("node-client")
@@ -76,6 +77,7 @@ known_peers = set()
 peer_last_seen = {}
 peer_scores = {}
 peer_runtime = {}
+peer_address_cache = {}
 DEFAULT_TRUST_SCORE = 100
 TRUST_REWARD = 2
 TRUST_PENALTY_MISMATCH = 10
@@ -122,6 +124,12 @@ LOCAL_VERIFICATIONS_FILE = os.path.join(
     "verifications.json",
 )
 
+PEER_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "node",
+    "runtime_state",
+    "peers.json",
+)
 
 def _serialize_local_verifications():
     serialized = []
@@ -322,6 +330,93 @@ def load_owned_claims():
             f"[Claims] Restored {len(restored)} owned claims"
         )
 
+def save_peer_cache():
+
+    os.makedirs(
+        os.path.dirname(PEER_CACHE_FILE),
+        exist_ok=True
+    )
+
+    payload = {
+        "peers": peer_address_cache
+    }
+
+    temp_path = f"{PEER_CACHE_FILE}.tmp"
+
+    try:
+
+        with open(temp_path, "w", encoding="utf-8") as handle:
+
+            json.dump(payload, handle)
+
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temp_path, PEER_CACHE_FILE)
+
+    except Exception:
+
+        logger.exception(
+            "[Peers] Failed to save peer cache"
+        )
+
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+
+def load_peer_cache():
+
+    if not os.path.exists(PEER_CACHE_FILE):
+        return
+
+    try:
+
+        with open(
+            PEER_CACHE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as handle:
+
+            payload = json.load(handle)
+
+    except Exception:
+
+        logger.exception(
+            "[Peers] Failed to load peer cache"
+        )
+
+        return
+
+    peers = payload.get("peers", {})
+
+    if not isinstance(peers, dict):
+        return
+
+    peer_address_cache.clear()
+
+    for peer_id, data in peers.items():
+
+        if not isinstance(data, dict):
+            continue
+
+        peer_address_cache[peer_id] = {
+            "host": data.get("host"),
+            "port": data.get("port", 8765),
+            "last_seen": data.get("last_seen", time.time()),
+            "trust": data.get(
+                "trust",
+                DEFAULT_TRUST_SCORE
+            )
+        }
+
+    logger.info(
+        f"[Peers] Restored "
+        f"{len(peer_address_cache)} cached peers"
+    )
+
 def add_local_verification(verification_key, verification_data):
     local_verifications[verification_key] = verification_data
     save_local_verifications()
@@ -332,8 +427,41 @@ def remove_local_verification(verification_key):
     save_local_verifications()
     return removed
 
+def update_peer_cache(
+    peer_id,
+    host=None,
+    port=8765
+):
+
+    if not peer_id:
+        return
+
+    if peer_id == get_node_id():
+        return
+
+    existing = peer_address_cache.get(
+        peer_id,
+        {}
+    )
+
+    peer_address_cache[peer_id] = {
+        "host": host or existing.get("host"),
+        "port": port or existing.get("port", 8765),
+        "last_seen": time.time(),
+        "trust": peer_scores.get(
+            peer_id,
+            {}
+        ).get(
+            "trust",
+            DEFAULT_TRUST_SCORE
+        )
+    }
+
+    save_peer_cache()
+
 load_local_verifications()
 load_owned_claims()
+load_peer_cache()
 
 async def get_runtime_state():
 
@@ -380,6 +508,10 @@ async def enqueue_runtime_snapshot():
         current_active = active_chunks
 
     runtime_state = await get_runtime_state()
+    peer_host = os.getenv(
+        "PEER_HOST",
+        "localhost"
+    )
 
     await enqueue_message({
         "type": "heartbeat_ack",
@@ -388,9 +520,12 @@ async def enqueue_runtime_snapshot():
             "status": runtime_state,
             "active_chunks": current_active,
             "known_peers": len(known_peers),
-            "relay": current_relay
+            "relay": current_relay,
+            "peer_host": peer_host,
+            "peer_port": 8765
         },
-        "peer_port": 8765
+        "peer_port": 8765,
+        "peer_host": peer_host
     })
 
 
@@ -561,6 +696,7 @@ def add_peer(peer_id):
 
     is_new_peer = peer_id not in known_peers
     known_peers.add(peer_id)
+    update_peer_cache(peer_id)
     if peer_id not in peer_scores:
         peer_scores[peer_id] = {
             "success": 0,
@@ -1859,6 +1995,7 @@ async def connect_to_relay():
     global relay_connected
     global startup_recovery_done
     global peer_server
+    global peer_recovery_done
 
     if peer_server is None:
 
@@ -1871,6 +2008,10 @@ async def connect_to_relay():
         logger.info(
             "[PeerMesh] Direct peer server started"
         )
+
+        if not peer_recovery_done:
+            await restore_cached_peers()
+            peer_recovery_done = True
 
     while True:
         node_id = get_node_id()
@@ -2033,8 +2174,16 @@ async def connect_to_peer(
     port
 ):
 
-    if peer_id in peer_connections:
+    if peer_id == get_node_id():
         return
+    
+    existing = peer_connections.get(peer_id)
+    if existing:
+        try:
+            if not existing.closed:
+                return
+        except Exception:
+            pass
 
     try:
 
@@ -2043,6 +2192,11 @@ async def connect_to_peer(
         )
 
         peer_connections[peer_id] = ws
+        update_peer_cache(
+            peer_id,
+            host=host,
+            port=port
+        )
 
         asyncio.create_task(
             listen_to_peer(
@@ -2079,16 +2233,65 @@ async def listen_to_peer(
             )
 
     except Exception:
-
+        peer_last_seen[peer_id] = time.time()
         peer_connections.pop(
             peer_id,
             None
         )
-
         logger.warning(
             f"[PeerMesh] Lost peer "
             f"peer={peer_id}"
         )
+
+async def restore_cached_peers():
+
+    if not peer_address_cache:
+
+        logger.info(
+            "[PeerRecovery] No cached peers"
+        )
+
+        return
+
+    logger.info(
+        f"[PeerRecovery] Attempting restore "
+        f"for {len(peer_address_cache)} peers"
+    )
+
+    recovery_tasks = []
+
+    for peer_id, data in peer_address_cache.items():
+
+        if peer_id == get_node_id():
+            continue
+
+        host = data.get("host")
+        port = data.get("port", 8765)
+
+        if not host:
+            continue
+
+        recovery_tasks.append(
+            asyncio.create_task(
+                connect_to_peer(
+                    peer_id,
+                    host,
+                    port
+                )
+            )
+        )
+
+    if recovery_tasks:
+
+        await asyncio.gather(
+            *recovery_tasks,
+            return_exceptions=True
+        )
+
+    logger.info(
+        f"[PeerRecovery] Connected peers="
+        f"{len(peer_connections)}"
+    )
 
 async def send_direct_or_relay(
     target,
@@ -2145,6 +2348,17 @@ async def handle_direct_peer_message(data):
         source = data.get("source")
 
         payload = data.get("payload", {})
+        peer_host = payload.get(
+            "peer_host",
+            data.get(
+                "peer_host",
+                "localhost"
+            )
+        )
+        peer_port = payload.get(
+            "peer_port",
+            data.get("peer_port")
+        )
 
         if source:
 
@@ -2160,17 +2374,22 @@ async def handle_direct_peer_message(data):
                 ),
                 "relay": payload.get("relay"),
                 "timestamp": time.time(),
-                "peer_port": payload.get("peer_port"),
+                "peer_port": peer_port,
+                "peer_host": peer_host,
             }
-
-            peer_port = payload.get("peer_port")
+            
+            update_peer_cache(
+                source,
+                host=peer_host,
+                port=peer_port or 8765
+            )
 
             if peer_port:
 
                 asyncio.create_task(
                     connect_to_peer(
                         source,
-                        "localhost",
+                        peer_host,
                         peer_port
                     )
                 )
