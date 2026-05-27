@@ -444,6 +444,9 @@ def update_peer_cache(
         {}
     )
 
+    if host and not is_valid_peer_host(host):
+        return
+
     peer_address_cache[peer_id] = {
         "host": host or existing.get("host"),
         "port": port or existing.get("port", 8765),
@@ -728,6 +731,42 @@ def remove_stale_peers():
 
         logger.info(f"[Peers] Removed stale peer {peer}")
 
+def build_peer_metadata(peer_id):
+
+    cache = peer_address_cache.get(
+        peer_id,
+        {}
+    )
+
+    return {
+        "peer_id": peer_id,
+        "host": cache.get("host"),
+        "port": cache.get("port", 8765),
+        "trust": cache.get(
+            "trust",
+            DEFAULT_TRUST_SCORE
+        ),
+        "last_seen": cache.get(
+            "last_seen",
+            time.time()
+        )
+    }
+
+def is_valid_peer_host(host):
+
+    if not host:
+        return False
+
+    if not isinstance(host, str):
+        return False
+
+    host = host.strip()
+
+    if not host:
+        return False
+
+    return True
+
 async def peer_gossip_loop():
     while True:
         try:
@@ -757,7 +796,8 @@ async def peer_gossip_loop():
                         "target": peer_id,
                         "action": "peer_exchange",
                         "peers": [
-                            p for p in known_subset
+                            build_peer_metadata(p)
+                            for p in known_subset
                             if p != peer_id
                         ]
                     }
@@ -2153,9 +2193,7 @@ async def peer_server_handler(websocket):
         async for message in websocket:
 
             data = json.loads(message)
-
             payload = data.get("payload", {})
-
             source = (
                 data.get("source")
                 or payload.get("source")
@@ -2166,7 +2204,9 @@ async def peer_server_handler(websocket):
             await handle_direct_peer_message(data)
 
     except Exception:
-        pass
+        logger.exception(
+            "[PeerMesh] Peer server handler crashed"
+        )
 
 async def connect_to_peer(
     peer_id,
@@ -2175,6 +2215,9 @@ async def connect_to_peer(
 ):
 
     if peer_id == get_node_id():
+        return
+    
+    if not is_valid_peer_host(host):
         return
     
     existing = peer_connections.get(peer_id)
@@ -2233,7 +2276,7 @@ async def listen_to_peer(
             )
 
     except Exception:
-        peer_last_seen[peer_id] = time.time()
+        peer_last_seen.pop(peer_id, None)
         peer_connections.pop(
             peer_id,
             None
@@ -2881,9 +2924,39 @@ async def handle_direct_peer_message(data):
             peers = payload.get("peers", [])
 
             if isinstance(peers, list):
-                for peer_id in peers:
-                    if isinstance(peer_id, str):
-                        add_peer(peer_id)
+                for peer in peers:
+
+                    if not isinstance(peer, dict):
+                        continue
+
+                    peer_id = peer.get("peer_id")
+
+                    if not peer_id:
+                        continue
+
+                    add_peer(peer_id)
+
+                    update_peer_cache(
+                        peer_id,
+                        host=peer.get("host"),
+                        port=peer.get("port", 8765)
+                    )
+
+                    peer_host = peer.get("host")
+                    peer_port = peer.get("port", 8765)
+
+                    if (
+                        peer_id not in peer_connections
+                        and is_valid_peer_host(peer_host)
+                    ):
+
+                        asyncio.create_task(
+                            connect_to_peer(
+                                peer_id,
+                                peer_host,
+                                peer_port
+                            )
+                        )
 
         elif action == "digest_gossip":
 
