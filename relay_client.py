@@ -79,21 +79,17 @@ def get_download_lock(job_id):
 
 
 async def download_job(job_id):
-
     jobs_base = os.path.abspath("jobs")
-
     extract_path = os.path.join(
         jobs_base,
         str(job_id)
     )
 
     if os.path.exists(extract_path):
-
         logger.info(
             f"[Package] Using local package "
             f"job={job_id}"
         )
-
         return extract_path
 
     mirrors = list(
@@ -103,7 +99,6 @@ async def download_job(job_id):
     random.shuffle(mirrors)
 
     for peer_id in mirrors:
-
         if peer_id == get_node_id():
             continue
 
@@ -113,22 +108,20 @@ async def download_job(job_id):
         )
 
         if peer_result:
-
             package_registry.setdefault(
                 job_id,
                 set()
             ).add(get_node_id())
 
             try:
-
                 await broadcast_action(
                     "package_available",
                     job_id=job_id,
-                    peer_id=get_node_id()
+                    peer_id=get_node_id(),
+                    package_hash=package_hash_registry.get(job_id)
                 )
 
             except Exception:
-
                 logger.exception(
                     f"[Package] Failed to broadcast "
                     f"mirror availability "
@@ -147,6 +140,13 @@ async def download_job(job_id):
         job_id
     )
 
+    package_hash = await asyncio.to_thread(
+        compute_package_hash,
+        job_id
+    )
+    if package_hash:
+        package_hash_registry[job_id] = package_hash
+
     package_registry.setdefault(
         job_id,
         set()
@@ -157,7 +157,8 @@ async def download_job(job_id):
         await broadcast_action(
             "package_available",
             job_id=job_id,
-            peer_id=get_node_id()
+            peer_id=get_node_id(),
+            package_hash=package_hash_registry.get(job_id)
         )
 
     except Exception:
@@ -177,6 +178,8 @@ peer_scores = {}
 peer_runtime = {}
 peer_address_cache = {}
 package_registry = {}
+package_hash_registry = {}
+job_manifest_registry = {}
 DEFAULT_TRUST_SCORE = 100
 TRUST_REWARD = 2
 TRUST_PENALTY_MISMATCH = 10
@@ -630,6 +633,36 @@ def extract_job_zip(job_id):
         archive.extractall(extract_path)
 
     return extract_path
+
+def compute_package_hash(job_id):
+    zip_path = get_job_zip_path(job_id)
+    if not os.path.exists(zip_path):
+        return None
+    sha256 = hashlib.sha256()
+    with open(zip_path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+def build_job_manifest(
+    job_id,
+    total_chunks,
+    chunk_data
+):
+    manifest = {
+        "job_id": job_id,
+        "package_hash": compute_package_hash(job_id),
+        "total_chunks": total_chunks,
+        "chunk_data": chunk_data,
+        "created_by": get_node_id(),
+        "created_at": time.time(),
+        "manifest_version": 1
+    }
+    job_manifest_registry[job_id] = manifest
+    return manifest
 
 async def enqueue_message(message):
     try:
@@ -2603,6 +2636,20 @@ async def download_job_from_peer(
 
                 os.replace(temp_zip, zip_path)
 
+        package_hash = compute_package_hash(job_id)
+        expected_hash = package_hash_registry.get(job_id)
+        if (
+            expected_hash
+            and package_hash != expected_hash
+        ):
+            logger.error(
+                f"[Security] Package hash mismatch "
+                f"peer={peer_id} "
+                f"job={job_id}"
+            )
+            os.remove(zip_path)
+            return None
+
         logger.info(
             f"[Package] Peer download success "
             f"peer={peer_id} "
@@ -2747,23 +2794,110 @@ async def handle_direct_peer_message(data):
                 add_peer(peer)
 
     elif msg_type == "job_manifest":
+
         source = data.get("source")
+
         payload = data.get("payload", {})
-        job_id = payload.get("job_id")
+
+        manifest = payload.get("manifest", {})
+        rebroadcasted = False
+
+        if not isinstance(manifest, dict) or not manifest:
+            job_id = payload.get("job_id")
+
+            if not job_id or not is_valid_job_id(job_id):
+                return
+
+            total_chunks = int(
+                payload.get("total_chunks", 0) or 0
+            )
+
+            chunk_data = validate_chunk_data(
+                payload.get("chunk_data", {})
+            )
+
+            manifest = build_job_manifest(
+                job_id,
+                total_chunks,
+                chunk_data
+            )
+
+            incoming_hash = payload.get("package_hash")
+
+            if (
+                incoming_hash
+                and job_id not in package_hash_registry
+            ):
+                package_hash_registry[job_id] = incoming_hash
+                manifest["package_hash"] = incoming_hash
+                job_manifest_registry[job_id] = manifest
+
+            await broadcast_action(
+                "job_manifest",
+                manifest=manifest
+            )
+            rebroadcasted = True
+
+        if not isinstance(manifest, dict):
+            return
+
+        if not source and not rebroadcasted:
+            await broadcast_action(
+                "job_manifest",
+                manifest=manifest
+            )
+
+        job_id = manifest.get("job_id")
+
         if not job_id or not is_valid_job_id(job_id):
             return
 
-        total_chunks = int(payload.get("total_chunks", 0) or 0)
-        chunk_data_raw = payload.get("chunk_data", {})
-        chunk_data = validate_chunk_data(chunk_data_raw)
-        state = init_job(job_id, total_chunks=total_chunks, chunk_data_map=chunk_data)
+        package_hash = manifest.get(
+            "package_hash"
+        )
+
+        if (
+            package_hash
+            and job_id not in package_hash_registry
+        ):
+            package_hash_registry[job_id] = package_hash
+
+        total_chunks = int(
+            manifest.get("total_chunks", 0) or 0
+        )
+
+        chunk_data_raw = manifest.get(
+            "chunk_data",
+            {}
+        )
+
+        chunk_data = validate_chunk_data(
+            chunk_data_raw
+        )
+
+        state = init_job(
+            job_id,
+            total_chunks=total_chunks,
+            chunk_data_map=chunk_data
+        )
+
         state["status"] = "running"
+
+        state["last_updated"] = time.time()
+
+        increment_version_vector(state)
+
+        job_manifest_registry[job_id] = manifest
+
         package_registry.setdefault(
             job_id,
             set()
         ).add(source or get_node_id())
-        state["last_updated"] = time.time()
-        increment_version_vector(state)
+
+        logger.info(
+            f"[Manifest] Registered manifest "
+            f"job={job_id}"
+        )
 
     elif msg_type == "cleanup_job":
         payload = data.get("payload", {})
@@ -2795,6 +2929,22 @@ async def handle_direct_peer_message(data):
         payload = data.get("payload", {})
         source = data.get("source")
         action = payload.get("action")
+        if action == "job_manifest":
+            manifest = payload.get("manifest", {})
+
+            if not isinstance(manifest, dict):
+                return
+
+            await handle_direct_peer_message({
+                "type": "job_manifest",
+                "source": source,
+                "payload": {
+                    "manifest": manifest
+                }
+            })
+
+            return
+
         if action == "package_available":
             job_id = payload.get("job_id")
             peer_id = source or payload.get("peer_id")
@@ -2805,6 +2955,33 @@ async def handle_direct_peer_message(data):
                 or not peer_id
             ):
                 return
+
+            incoming_hash = payload.get(
+                "package_hash"
+            )
+
+            local_hash = package_hash_registry.get(
+                job_id
+            )
+
+            if (
+                incoming_hash
+                and local_hash
+                and incoming_hash != local_hash
+            ):
+
+                logger.error(
+                    f"[Security] Package hash conflict "
+                    f"job={job_id}"
+                )
+
+                return
+
+            if (
+                incoming_hash
+                and job_id not in package_hash_registry
+            ):
+                package_hash_registry[job_id] = incoming_hash
 
             package_registry.setdefault(
                 job_id,

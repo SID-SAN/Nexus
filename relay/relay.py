@@ -7,6 +7,7 @@ import asyncio
 import time
 import random
 import zipfile
+import hashlib
 import re
 from relay.job_persistence import load_jobs, save_jobs
 from db import supabase
@@ -38,6 +39,7 @@ node_last_seen = {}
 node_runtime = {}
 node_stats = {}
 jobs = load_jobs()
+job_manifest_registry = {}
 node_owner_map = {}
 credit_update_lock = asyncio.Lock()
 save_lock = asyncio.Lock()
@@ -753,6 +755,60 @@ def safe_job_zip_path(job_id: str) -> str:
     return path
 
 
+def compute_package_hash(job_id: str):
+    try:
+        zip_path = safe_job_zip_path(job_id)
+    except ValueError:
+        return None
+
+    if not os.path.exists(zip_path):
+        return None
+
+    sha256 = hashlib.sha256()
+
+    with open(zip_path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+
+            if not chunk:
+                break
+
+            sha256.update(chunk)
+
+    return sha256.hexdigest()
+
+MANIFEST_VERSION = 1
+
+def build_manifest(job_id, job):
+
+    package_hash = job.get("package_hash")
+
+    if not package_hash:
+        package_hash = compute_package_hash(job_id)
+
+        if package_hash:
+            job["package_hash"] = package_hash
+
+    return {
+        "job_id": job_id,
+        "package_hash": package_hash,
+        "total_chunks": job.get("chunks", 0),
+        "chunk_data": {
+            str(c["id"]): c
+            for c in job.get("chunks_data", [])
+        },
+        "created_by": "relay",
+        "created_at": job.get(
+            "created_at",
+            time.time()
+        ),
+        "manifest_version": MANIFEST_VERSION
+    }
+
+for jid, job in jobs.items():
+    manifest = build_manifest(jid, job)
+    job_manifest_registry[jid] = manifest
+
 async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
     verify_requests = job.setdefault("verify_requests", {})
 
@@ -786,16 +842,13 @@ async def forward_verify_chunk(job, source_node_id, job_id, chunk_key):
 
 
 async def broadcast_job_manifest(job_id, job):
-    chunk_data_map = {
-        str(c["id"]): c
-        for c in job.get("chunks_data", [])
-    }
+    manifest = build_manifest(job_id, job)
+
+    job_manifest_registry[job_id] = manifest
     message = {
         "type": "job_manifest",
         "payload": {
-            "job_id": job_id,
-            "total_chunks": job.get("chunks", 0),
-            "chunk_data": chunk_data_map
+            "manifest": manifest
         }
     }
     for node_id, ws in list(connected_nodes.items()):
@@ -902,6 +955,19 @@ def download_job(job_id: str):
         return error_response("invalid job id", "ERROR")
 
     return FileResponse(path) if os.path.exists(path) else {"error": "not found"}
+
+
+@app.get("/job_manifest/{job_id}")
+def get_job_manifest(job_id: str):
+    manifest = job_manifest_registry.get(job_id)
+
+    if not manifest:
+        return error_response(
+            "manifest not found",
+            "ERROR"
+        )
+
+    return manifest
 
 
 # -----------------------------
@@ -1034,15 +1100,16 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
     for jid, job in jobs.items():
         if job.get("status") != "running":
             continue
+
+        manifest = job_manifest_registry.get(jid)
+        if not manifest:
+            manifest = build_manifest(jid, job)
+            job_manifest_registry[jid] = manifest
+
         await safe_send(websocket, {
             "type": "job_manifest",
             "payload": {
-                "job_id": jid,
-                "total_chunks": job.get("chunks", 0),
-                "chunk_data": {
-                    str(c["id"]): c
-                    for c in job.get("chunks_data", [])
-                }
+                "manifest": manifest
             }
         }, node_id)
 
