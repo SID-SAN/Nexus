@@ -9,13 +9,15 @@ import random
 import re
 import uuid
 import hashlib
+import zipfile
+import shutil
 from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
 from node.downloader import download_job as download_job_from_relay
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
-from config import NODE_ID, RELAY_URLS
+from config import RELAY_URLS
 from logger import setup_logger
-from aiohttp import web
+from aiohttp import web, ClientSession, ClientTimeout
 from chaos import (
     chaos_enabled,
     should_trigger,
@@ -78,26 +80,91 @@ def get_download_lock(job_id):
 
 async def download_job(job_id):
 
+    jobs_base = os.path.abspath("jobs")
+
+    extract_path = os.path.join(
+        jobs_base,
+        str(job_id)
+    )
+
+    if os.path.exists(extract_path):
+
+        logger.info(
+            f"[Package] Using local package "
+            f"job={job_id}"
+        )
+
+        return extract_path
+
+    mirrors = list(
+        package_registry.get(job_id, set())
+    )
+
+    random.shuffle(mirrors)
+
+    for peer_id in mirrors:
+
+        if peer_id == get_node_id():
+            continue
+
+        peer_result = await download_job_from_peer(
+            peer_id,
+            job_id
+        )
+
+        if peer_result:
+
+            package_registry.setdefault(
+                job_id,
+                set()
+            ).add(get_node_id())
+
+            try:
+
+                await broadcast_action(
+                    "package_available",
+                    job_id=job_id,
+                    peer_id=get_node_id()
+                )
+
+            except Exception:
+
+                logger.exception(
+                    f"[Package] Failed to broadcast "
+                    f"mirror availability "
+                    f"job={job_id}"
+                )
+
+            return peer_result
+
+    logger.warning(
+        f"[Package] Falling back to relay "
+        f"job={job_id}"
+    )
+
     extract_path = await asyncio.to_thread(
         download_job_from_relay,
         job_id
     )
 
-    owner = get_node_id()
     package_registry.setdefault(
         job_id,
         set()
-    ).add(owner)
+    ).add(get_node_id())
 
     try:
+
         await broadcast_action(
             "package_available",
             job_id=job_id,
-            peer_id=owner
+            peer_id=get_node_id()
         )
+
     except Exception:
+
         logger.exception(
-            f"[Package] Failed to broadcast availability "
+            f"[Package] Failed to broadcast "
+            f"relay package availability "
             f"job={job_id}"
         )
 
@@ -542,6 +609,27 @@ def get_job_zip_path(job_id):
             f"{job_id}.zip"
         )
     )
+
+
+def extract_job_zip(job_id):
+    zip_path = get_job_zip_path(job_id)
+    jobs_base = os.path.abspath("jobs")
+    extract_path = os.path.join(
+        jobs_base,
+        str(job_id)
+    )
+    if os.path.exists(extract_path):
+        shutil.rmtree(extract_path)
+    os.makedirs(
+        extract_path,
+        exist_ok=True
+    )
+
+    with zipfile.ZipFile(zip_path, "r") as archive:
+
+        archive.extractall(extract_path)
+
+    return extract_path
 
 async def enqueue_message(message):
     try:
@@ -2449,6 +2537,101 @@ async def start_package_server():
         f"port={PACKAGE_SERVER_PORT}"
     )
 
+async def download_job_from_peer(
+    peer_id,
+    job_id
+):
+    temp_zip = None
+
+    peer_info = peer_address_cache.get(
+        peer_id,
+        {}
+    )
+
+    host = peer_info.get("host")
+
+    package_port = peer_info.get(
+        "package_port",
+        PACKAGE_SERVER_PORT
+    )
+
+    if not is_valid_peer_host(host):
+        return None
+
+    url = (
+        f"http://{host}:{package_port}"
+        f"/job_package/{job_id}"
+    )
+
+    logger.info(
+        f"[Package] Attempting peer download "
+        f"peer={peer_id} "
+        f"job={job_id}"
+    )
+
+    try:
+
+        timeout = ClientTimeout(total=60)
+
+        async with ClientSession(timeout=timeout) as session:
+
+            async with session.get(url) as response:
+
+                if response.status != 200:
+
+                    logger.warning(
+                        f"[Package] Peer download failed "
+                        f"peer={peer_id} "
+                        f"status={response.status}"
+                    )
+
+                    return None
+
+                zip_path = get_job_zip_path(job_id)
+                temp_zip = f"{zip_path}.tmp"
+
+                os.makedirs(
+                    os.path.dirname(zip_path),
+                    exist_ok=True
+                )
+
+                with open(temp_zip, "wb") as handle:
+
+                    async for chunk in response.content.iter_chunked(65536):
+
+                        handle.write(chunk)
+
+                os.replace(temp_zip, zip_path)
+
+        logger.info(
+            f"[Package] Peer download success "
+            f"peer={peer_id} "
+            f"job={job_id}"
+        )
+
+        extract_path = await asyncio.to_thread(
+            extract_job_zip,
+            job_id
+        )
+
+        return extract_path
+
+    except Exception:
+
+        try:
+            if temp_zip and os.path.exists(temp_zip):
+                os.remove(temp_zip)
+        except OSError:
+            pass
+
+        logger.exception(
+            f"[Package] Peer download crashed "
+            f"peer={peer_id} "
+            f"job={job_id}"
+        )
+
+        return None
+
 async def send_direct_or_relay(
     target,
     payload
@@ -2464,7 +2647,7 @@ async def send_direct_or_relay(
 
             direct_payload = dict(payload)
 
-            direct_payload["source"] = NODE_ID
+            direct_payload["source"] = get_node_id()
 
             await peer_ws.send(
                 json.dumps(direct_payload)
