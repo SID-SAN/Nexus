@@ -11,10 +11,11 @@ import uuid
 import hashlib
 from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
-from node.downloader import download_job
+from node.downloader import download_job as download_job_from_relay
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
 from config import NODE_ID, RELAY_URLS
 from logger import setup_logger
+from aiohttp import web
 from chaos import (
     chaos_enabled,
     should_trigger,
@@ -43,6 +44,8 @@ download_locks = {}
 owned_claims = {}
 peer_connections = {}
 peer_server = None
+package_server = None
+PACKAGE_SERVER_PORT = 8780
 relay_connected = False
 startup_recovery_done = False
 peer_recovery_done = False
@@ -72,12 +75,41 @@ def get_download_lock(job_id):
         download_locks[job_id] = asyncio.Lock()
     return download_locks[job_id]
 
+
+async def download_job(job_id):
+
+    extract_path = await asyncio.to_thread(
+        download_job_from_relay,
+        job_id
+    )
+
+    owner = get_node_id()
+    package_registry.setdefault(
+        job_id,
+        set()
+    ).add(owner)
+
+    try:
+        await broadcast_action(
+            "package_available",
+            job_id=job_id,
+            peer_id=owner
+        )
+    except Exception:
+        logger.exception(
+            f"[Package] Failed to broadcast availability "
+            f"job={job_id}"
+        )
+
+    return extract_path
+
 websocket_connection = None
 known_peers = set()
 peer_last_seen = {}
 peer_scores = {}
 peer_runtime = {}
 peer_address_cache = {}
+package_registry = {}
 DEFAULT_TRUST_SCORE = 100
 TRUST_REWARD = 2
 TRUST_PENALTY_MISMATCH = 10
@@ -405,6 +437,7 @@ def load_peer_cache():
         peer_address_cache[peer_id] = {
             "host": data.get("host"),
             "port": data.get("port", 8765),
+            "package_port": data.get("package_port"),
             "last_seen": data.get("last_seen", time.time()),
             "trust": data.get(
                 "trust",
@@ -430,7 +463,8 @@ def remove_local_verification(verification_key):
 def update_peer_cache(
     peer_id,
     host=None,
-    port=8765
+    port=8765,
+    package_port=None
 ):
 
     if not peer_id:
@@ -450,6 +484,11 @@ def update_peer_cache(
     peer_address_cache[peer_id] = {
         "host": host or existing.get("host"),
         "port": port or existing.get("port", 8765),
+        "package_port": (
+            package_port
+            if package_port is not None
+            else existing.get("package_port")
+        ),
         "last_seen": time.time(),
         "trust": peer_scores.get(
             peer_id,
@@ -495,6 +534,14 @@ def error_response(message, code="ERROR"):
 def is_valid_job_id(job_id):
     return bool(JOB_ID_RE.fullmatch(str(job_id or "")))
 
+def get_job_zip_path(job_id):
+
+    return os.path.abspath(
+        os.path.join(
+            "jobs",
+            f"{job_id}.zip"
+        )
+    )
 
 async def enqueue_message(message):
     try:
@@ -525,10 +572,12 @@ async def enqueue_runtime_snapshot():
             "known_peers": len(known_peers),
             "relay": current_relay,
             "peer_host": peer_host,
-            "peer_port": 8765
+            "peer_port": 8765,
+            "package_port": PACKAGE_SERVER_PORT
         },
         "peer_port": 8765,
-        "peer_host": peer_host
+        "peer_host": peer_host,
+        "package_port": PACKAGE_SERVER_PORT,
     })
 
 
@@ -742,6 +791,7 @@ def build_peer_metadata(peer_id):
         "peer_id": peer_id,
         "host": cache.get("host"),
         "port": cache.get("port", 8765),
+        "package_port": cache.get("package_port"),
         "trust": cache.get(
             "trust",
             DEFAULT_TRUST_SCORE
@@ -1236,7 +1286,7 @@ async def execute_verify_chunk(job_id, chunk, target_node):
         lock = get_download_lock(job_id)
         async with lock:
             if not os.path.exists(extract_path):
-                await asyncio.to_thread(download_job, job_id)
+                await download_job(job_id)
 
         chunk_data = job_cache.get(job_id, {}).get("chunk_data_map", {}).get(str(chunk), {})
         result = await asyncio.to_thread(execute_chunk, job_id, chunk, chunk_data)
@@ -1314,7 +1364,7 @@ async def execute_chunk_task(job_id, chunk):
         async with lock:
             if not os.path.exists(extract_path):
                 try:
-                    await asyncio.to_thread(download_job, job_id)
+                    await download_job(job_id)
                 except FileExistsError:
                     pass
     except Exception:
@@ -2044,6 +2094,7 @@ async def connect_to_relay():
             "0.0.0.0",
             8765
         )
+        await start_package_server()
 
         logger.info(
             "[PeerMesh] Direct peer server started"
@@ -2336,6 +2387,68 @@ async def restore_cached_peers():
         f"{len(peer_connections)}"
     )
 
+async def serve_job_package(request):
+
+    job_id = request.match_info.get(
+        "job_id"
+    )
+
+    if not is_valid_job_id(job_id):
+
+        return web.Response(
+            status=400,
+            text="invalid job id"
+        )
+
+    zip_path = get_job_zip_path(job_id)
+
+    if not os.path.exists(zip_path):
+
+        return web.Response(
+            status=404,
+            text="job package not found"
+        )
+
+    logger.info(
+        f"[Package] Serving package "
+        f"job={job_id}"
+    )
+
+    return web.FileResponse(zip_path)
+
+async def start_package_server():
+
+    global package_server
+
+    if package_server:
+        return
+
+    app = web.Application()
+
+    app.router.add_get(
+        "/job_package/{job_id}",
+        serve_job_package
+    )
+
+    runner = web.AppRunner(app)
+
+    await runner.setup()
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        PACKAGE_SERVER_PORT
+    )
+
+    await site.start()
+
+    package_server = runner
+
+    logger.info(
+        f"[Package] Package server started "
+        f"port={PACKAGE_SERVER_PORT}"
+    )
+
 async def send_direct_or_relay(
     target,
     payload
@@ -2402,6 +2515,10 @@ async def handle_direct_peer_message(data):
             "peer_port",
             data.get("peer_port")
         )
+        package_port = payload.get(
+            "package_port",
+            data.get("package_port")
+        )
 
         if source:
 
@@ -2418,13 +2535,15 @@ async def handle_direct_peer_message(data):
                 "relay": payload.get("relay"),
                 "timestamp": time.time(),
                 "peer_port": peer_port,
+                "package_port": package_port,
                 "peer_host": peer_host,
             }
             
             update_peer_cache(
                 source,
                 host=peer_host,
-                port=peer_port or 8765
+                port=peer_port or 8765,
+                package_port=package_port
             )
 
             if peer_port:
@@ -2445,6 +2564,7 @@ async def handle_direct_peer_message(data):
                 add_peer(peer)
 
     elif msg_type == "job_manifest":
+        source = data.get("source")
         payload = data.get("payload", {})
         job_id = payload.get("job_id")
         if not job_id or not is_valid_job_id(job_id):
@@ -2455,6 +2575,10 @@ async def handle_direct_peer_message(data):
         chunk_data = validate_chunk_data(chunk_data_raw)
         state = init_job(job_id, total_chunks=total_chunks, chunk_data_map=chunk_data)
         state["status"] = "running"
+        package_registry.setdefault(
+            job_id,
+            set()
+        ).add(source or get_node_id())
         state["last_updated"] = time.time()
         increment_version_vector(state)
 
@@ -2488,7 +2612,23 @@ async def handle_direct_peer_message(data):
         payload = data.get("payload", {})
         source = data.get("source")
         action = payload.get("action")
-        if action == "claim_chunk":
+        if action == "package_available":
+            job_id = payload.get("job_id")
+            peer_id = source or payload.get("peer_id")
+
+            if (
+                not job_id
+                or not is_valid_job_id(job_id)
+                or not peer_id
+            ):
+                return
+
+            package_registry.setdefault(
+                job_id,
+                set()
+            ).add(peer_id)
+
+        elif action == "claim_chunk":
             job_id = payload.get("job_id")
             chunk = str(payload.get("chunk"))
             if job_id is None or chunk is None:
@@ -2939,7 +3079,8 @@ async def handle_direct_peer_message(data):
                     update_peer_cache(
                         peer_id,
                         host=peer.get("host"),
-                        port=peer.get("port", 8765)
+                        port=peer.get("port", 8765),
+                        package_port=peer.get("package_port")
                     )
 
                     peer_host = peer.get("host")
