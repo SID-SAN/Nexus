@@ -2988,6 +2988,61 @@ async def handle_direct_peer_message(data):
                 set()
             ).add(peer_id)
 
+        elif action == "manifest_sync_request":
+            try:
+                await send_direct_or_relay(
+                    source,
+                    {
+                        "type": "direct_message",
+                        "payload": {
+                            "target": source,
+                            "action": "manifest_sync_response",
+                            "manifests": job_manifest_registry
+                        }
+                    }
+                )
+            except Exception:
+                logger.exception(
+                    "[Manifest] Failed to send manifest sync response"
+                )
+
+        elif action == "manifest_sync_response":
+
+            manifests = payload.get(
+                "manifests",
+                {}
+            )
+
+            if not isinstance(manifests, dict):
+                return
+
+            added = 0
+
+            for job_id, manifest in manifests.items():
+
+                if job_id in job_manifest_registry:
+                    continue
+
+                job_manifest_registry[job_id] = manifest
+
+                package_hash = manifest.get(
+                    "package_hash"
+                )
+
+                if package_hash:
+
+                    package_hash_registry[
+                        job_id
+                    ] = package_hash
+
+                added += 1
+
+            logger.info(
+                f"[Manifest] Imported "
+                f"{added} manifests "
+                f"from peer"
+            )
+
         elif action == "claim_chunk":
             job_id = payload.get("job_id")
             chunk = str(payload.get("chunk"))
