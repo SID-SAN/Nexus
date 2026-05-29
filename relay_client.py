@@ -15,7 +15,11 @@ from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
 from node.downloader import download_job as download_job_from_relay
 from node.executor import execute_chunk, cleanup_job as cleanup_job_files
-from config import RELAY_URLS
+from config import (
+    RELAY_URLS,
+    PEER_PORT,
+    PACKAGE_SERVER_PORT
+)
 from logger import setup_logger
 from aiohttp import web, ClientSession, ClientTimeout
 from chaos import (
@@ -47,7 +51,6 @@ owned_claims = {}
 peer_connections = {}
 peer_server = None
 package_server = None
-PACKAGE_SERVER_PORT = 8780
 relay_connected = False
 startup_recovery_done = False
 peer_recovery_done = False
@@ -506,7 +509,7 @@ def load_peer_cache():
 
         peer_address_cache[peer_id] = {
             "host": data.get("host"),
-            "port": data.get("port", 8765),
+            "port": data.get("port", PEER_PORT),
             "package_port": data.get("package_port"),
             "last_seen": data.get("last_seen", time.time()),
             "trust": data.get(
@@ -533,7 +536,7 @@ def remove_local_verification(verification_key):
 def update_peer_cache(
     peer_id,
     host=None,
-    port=8765,
+    port=PEER_PORT,
     package_port=None
 ):
 
@@ -553,7 +556,7 @@ def update_peer_cache(
 
     peer_address_cache[peer_id] = {
         "host": host or existing.get("host"),
-        "port": port or existing.get("port", 8765),
+        "port": port or existing.get("port", PEER_PORT),
         "package_port": (
             package_port
             if package_port is not None
@@ -693,10 +696,10 @@ async def enqueue_runtime_snapshot():
             "known_peers": len(known_peers),
             "relay": current_relay,
             "peer_host": peer_host,
-            "peer_port": 8765,
+            "peer_port": PEER_PORT,
             "package_port": PACKAGE_SERVER_PORT
         },
-        "peer_port": 8765,
+        "peer_port": PEER_PORT,
         "peer_host": peer_host,
         "package_port": PACKAGE_SERVER_PORT,
     })
@@ -911,7 +914,7 @@ def build_peer_metadata(peer_id):
     return {
         "peer_id": peer_id,
         "host": cache.get("host"),
-        "port": cache.get("port", 8765),
+        "port": cache.get("port", PEER_PORT),
         "package_port": cache.get("package_port"),
         "trust": cache.get(
             "trust",
@@ -2213,14 +2216,12 @@ async def connect_to_relay():
         peer_server = await websockets.serve(
             peer_server_handler,
             "0.0.0.0",
-            8765
+            PEER_PORT
         )
         await start_package_server()
-
         logger.info(
             "[PeerMesh] Direct peer server started"
         )
-
         if not peer_recovery_done:
             await restore_cached_peers()
             peer_recovery_done = True
@@ -2481,7 +2482,7 @@ async def restore_cached_peers():
             continue
 
         host = data.get("host")
-        port = data.get("port", 8765)
+        port = data.get("port", PEER_PORT)
 
         if not host:
             continue
@@ -2772,7 +2773,7 @@ async def handle_direct_peer_message(data):
             update_peer_cache(
                 source,
                 host=peer_host,
-                port=peer_port or 8765,
+                port=peer_port or PEER_PORT,
                 package_port=package_port
             )
 
@@ -3494,12 +3495,12 @@ async def handle_direct_peer_message(data):
                     update_peer_cache(
                         peer_id,
                         host=peer.get("host"),
-                        port=peer.get("port", 8765),
+                        port=peer.get("port", PEER_PORT),
                         package_port=peer.get("package_port")
                     )
 
                     peer_host = peer.get("host")
-                    peer_port = peer.get("port", 8765)
+                    peer_port = peer.get("port", PEER_PORT)
 
                     if (
                         peer_id not in peer_connections
