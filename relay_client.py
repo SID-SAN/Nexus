@@ -42,6 +42,7 @@ claim_lock = asyncio.Lock()
 active_chunks_lock = asyncio.Lock()
 runtime_state_lock = asyncio.Lock()
 current_relay = None
+current_relay_url = None
 executing_tasks = 0
 verifying_tasks = 0
 recovering_tasks = 0
@@ -64,6 +65,15 @@ def get_node_id():
 
 def get_api_key():
     return os.getenv("API_KEY")
+
+
+def get_public_peer_host():
+    return (
+        os.getenv("PUBLIC_IP")
+        or os.getenv("PEER_HOST")
+        or "localhost"
+    )
+
 
 def get_relay_ws_url(base_url, node_id, api_key):
     relay_base = base_url
@@ -682,10 +692,7 @@ async def enqueue_runtime_snapshot():
         current_active = active_chunks
 
     runtime_state = await get_runtime_state()
-    peer_host = os.getenv(
-        "PEER_HOST",
-        "localhost"
-    )
+    public_ip = get_public_peer_host()
 
     await enqueue_message({
         "type": "heartbeat_ack",
@@ -694,13 +701,13 @@ async def enqueue_runtime_snapshot():
             "status": runtime_state,
             "active_chunks": current_active,
             "known_peers": len(known_peers),
-            "relay": current_relay,
-            "peer_host": peer_host,
+            "peer_host": public_ip,
             "peer_port": PEER_PORT,
-            "package_port": PACKAGE_SERVER_PORT
+            "package_port": PACKAGE_SERVER_PORT,
+            "relay": current_relay_url,
         },
         "peer_port": PEER_PORT,
-        "peer_host": peer_host,
+        "peer_host": public_ip,
         "package_port": PACKAGE_SERVER_PORT,
     })
 
@@ -2203,6 +2210,7 @@ async def connect_to_relay():
     global websocket_connection
     global work_loop_started
     global current_relay
+    global current_relay_url
     global known_peers
     global verify_success_count, verify_mismatch_count
     global last_relay_warning
@@ -2243,6 +2251,7 @@ async def connect_to_relay():
                 async with websockets.connect(relay_url, ping_interval=20, ping_timeout=20) as websocket:
                     websocket_connection = websocket
                     current_relay = base_url
+                    current_relay_url = relay_url
                     relay_connected = True
                     os.environ["RELAY_HTTP_URL"] = base_url
                     if work_loop_started:
@@ -2326,6 +2335,7 @@ async def connect_to_relay():
                 websocket_connection = None
                 if current_relay == base_url:
                     current_relay = None
+                    current_relay_url = None
                 relay_connected = False
                 logger.warning(f"[Relay] Connection closed: {base_url}")
                 logger.warning(
@@ -2337,6 +2347,7 @@ async def connect_to_relay():
                 websocket_connection = None
                 if current_relay == base_url:
                     current_relay = None
+                    current_relay_url = None
                 relay_connected = False
                 logger.warning(
                     f"[Relay] Connection failed: {base_url} | error={exc}"
@@ -2345,6 +2356,7 @@ async def connect_to_relay():
                 websocket_connection = None
                 if current_relay == base_url:
                     current_relay = None
+                    current_relay_url = None
                 relay_connected = False
                 logger.exception(
                     f"[Relay] Unexpected relay failure: {base_url}"
@@ -2352,6 +2364,7 @@ async def connect_to_relay():
 
         now = time.time()
         relay_connected = False
+        current_relay_url = None
         if now - last_relay_warning > 30:
             logger.warning("[Relay] All relays failed. Retrying in 3s...")
             last_relay_warning = now
@@ -2392,14 +2405,9 @@ async def connect_to_peer(
     
     if not is_valid_peer_host(host):
         return
-    
-    existing = peer_connections.get(peer_id)
-    if existing:
-        try:
-            if not existing.closed:
-                return
-        except Exception:
-            pass
+
+    if peer_id in peer_connections:
+        return
 
     try:
 
@@ -2424,6 +2432,20 @@ async def connect_to_peer(
         logger.info(
             f"[PeerMesh] Connected "
             f"peer={peer_id}"
+        )
+        logger.info(
+            f"[Manifest] Requesting sync from {peer_id}"
+        )
+
+        await send_direct_or_relay(
+            peer_id,
+            {
+                "type": "direct_message",
+                "payload": {
+                    "target": peer_id,
+                    "action": "manifest_sync_request"
+                }
+            }
         )
 
     except Exception:
@@ -2731,9 +2753,7 @@ async def handle_direct_peer_message(data):
         await enqueue_runtime_snapshot()
 
     elif msg_type == "heartbeat_ack":
-
         source = data.get("source")
-
         payload = data.get("payload", {})
         peer_host = payload.get(
             "peer_host",
@@ -2769,6 +2789,12 @@ async def handle_direct_peer_message(data):
                 "package_port": package_port,
                 "peer_host": peer_host,
             }
+
+            logger.info(
+                f"[HeartbeatAck] source={source} "
+                f"host={peer_host} "
+                f"port={peer_port}"
+            )
             
             update_peer_cache(
                 source,
@@ -2777,22 +2803,81 @@ async def handle_direct_peer_message(data):
                 package_port=package_port
             )
 
-            if peer_port:
+            try:
+                resolved_peer_port = int(peer_port)
+            except (TypeError, ValueError):
+                resolved_peer_port = None
+
+            if (
+                resolved_peer_port
+                and resolved_peer_port > 0
+                and source not in peer_connections
+                and is_valid_peer_host(peer_host)
+            ):
 
                 asyncio.create_task(
                     connect_to_peer(
                         source,
                         peer_host,
-                        peer_port
+                        resolved_peer_port
                     )
                 )
 
     elif msg_type == "peer_list":
         peers = data.get("nodes", [])
+        logger.info(
+            f"[PeerListDebug] {json.dumps(peers, indent=2)}"
+        )
         self_id = get_node_id()
+        if not isinstance(peers, list):
+            return
+
         for peer in peers:
-            if peer != self_id:
-                add_peer(peer)
+            if isinstance(peer, str):
+                if peer != self_id:
+                    add_peer(peer)
+                continue
+
+            if not isinstance(peer, dict):
+                continue
+
+            peer_id = peer.get("node_id")
+            if not peer_id or peer_id == self_id:
+                continue
+
+            peer_host = peer.get("peer_host")
+            peer_port = peer.get("peer_port")
+            package_port = peer.get("package_port")
+
+            add_peer(peer_id)
+            update_peer_cache(
+                peer_id,
+                host=peer_host,
+                port=peer_port or PEER_PORT,
+                package_port=package_port
+            )
+
+            if peer_id in peer_connections:
+                continue
+
+            if not is_valid_peer_host(peer_host):
+                continue
+
+            try:
+                resolved_peer_port = int(peer_port)
+            except (TypeError, ValueError):
+                continue
+
+            if resolved_peer_port <= 0:
+                continue
+
+            asyncio.create_task(
+                connect_to_peer(
+                    peer_id,
+                    peer_host,
+                    resolved_peer_port
+                )
+            )
 
     elif msg_type == "job_manifest":
 
@@ -2991,6 +3076,10 @@ async def handle_direct_peer_message(data):
 
         elif action == "manifest_sync_request":
             try:
+                logger.info(
+                    f"[Manifest] Sync requested by {source}"
+                )
+
                 await send_direct_or_relay(
                     source,
                     {
@@ -3042,6 +3131,9 @@ async def handle_direct_peer_message(data):
                 f"[Manifest] Imported "
                 f"{added} manifests "
                 f"from peer"
+            )
+            logger.info(
+                f"[Manifest] Sync response from {source}"
             )
 
         elif action == "claim_chunk":
@@ -3501,6 +3593,12 @@ async def handle_direct_peer_message(data):
 
                     peer_host = peer.get("host")
                     peer_port = peer.get("port", PEER_PORT)
+
+                    logger.info(
+                        f"[HeartbeatAck] source={source} "
+                        f"host={peer_host} "
+                        f"port={peer_port}"
+                    )
 
                     if (
                         peer_id not in peer_connections
