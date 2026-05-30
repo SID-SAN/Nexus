@@ -44,7 +44,7 @@ node_owner_map = {}
 credit_update_lock = asyncio.Lock()
 save_lock = asyncio.Lock()
 jobs_dirty = False
-last_peer_list = set()
+last_peer_list = ()
 reward_lock = asyncio.Lock()
 claim_recovery_count = 0
 duplicate_completion_count = 0
@@ -216,6 +216,11 @@ def update_node_runtime_from_heartbeat(node_id, payload):
     snapshot["status"] = status
     snapshot["active_chunks"] = max(active_chunks, 0)
     snapshot["known_peers"] = max(known_peers, 0)
+
+    snapshot["peer_host"] = payload.get("peer_host")
+    snapshot["peer_port"] = payload.get("peer_port")
+    snapshot["package_port"] = payload.get("package_port")
+
     snapshot["relay"] = payload.get("relay")
     snapshot["last_seen"] = time.time()
 
@@ -396,15 +401,35 @@ async def broadcast_peer_list():
         await asyncio.sleep(5)
 
         current = set(connected_nodes.keys())
-        if current == last_peer_list:
+
+        peer_nodes = []
+        for node_id in sorted(current):
+            runtime = node_runtime.get(node_id, {})
+            peer_nodes.append({
+                "node_id": node_id,
+                "peer_host": runtime.get("peer_host"),
+                "peer_port": runtime.get("peer_port"),
+                "package_port": runtime.get("package_port")
+            })
+
+        signature = tuple(
+            (
+                node.get("node_id"),
+                node.get("peer_host"),
+                node.get("peer_port"),
+                node.get("package_port"),
+            )
+            for node in peer_nodes
+        )
+        if signature == last_peer_list:
             continue
 
-        last_peer_list = current
+        last_peer_list = signature
         logger.info(f"[Relay] Broadcasting peers: {current}")
 
         message = {
             "type": "peer_list",
-            "nodes": list(current)
+            "nodes": peer_nodes
         }
 
         for node_id, ws in list(connected_nodes.items()):
@@ -1093,6 +1118,9 @@ async def websocket_endpoint(websocket: WebSocket, node_id: str):
         "status": "IDLE",
         "active_chunks": 0,
         "known_peers": 0,
+        "peer_host": None,
+        "peer_port": None,
+        "package_port": None,
         "relay": None
     }
 
