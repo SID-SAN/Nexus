@@ -129,7 +129,6 @@
         <th class="p-2 text-left">Status</th>
         <th class="p-2 text-left">Active Chunks</th>
         <th class="p-2 text-left">Peers</th>
-        <th class="p-2 text-left">Relay</th>
         <th class="p-2 text-left">Last Seen</th>
       </tr>
     </thead>
@@ -313,7 +312,7 @@ function updateNodes(metrics) {
 
   if (rows.length === 0) {
     document.getElementById("nodeBody").innerHTML =
-      "<tr><td class='p-2 text-slate-400' colspan='6'>No nodes tracked</td></tr>";
+      "<tr><td class='p-2 text-slate-400' colspan='5'>No nodes tracked</td></tr>";
     return;
   }
 
@@ -328,7 +327,6 @@ function updateNodes(metrics) {
         </td>
         <td class="p-2">${n.active_chunks ?? 0}</td>
         <td class="p-2">${n.known_peers ?? 0}</td>
-        <td class="p-2">${n.relay || "-"}</td>
         <td class="p-2 text-slate-300">${formatLastSeen(n.last_seen_age)}</td>
       </tr>
       `;
