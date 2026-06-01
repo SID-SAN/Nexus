@@ -939,10 +939,12 @@ def cluster_metrics():
 
     active_claims = 0
     pending_chunks = 0
+
     for job in jobs.values():
         ensure_job_runtime_fields(job)
-        active_claims += len(job.get("claims", {}))
+
         if job.get("status") == "running":
+            active_claims += len(job.get("claims", {}))
             pending_chunks += len(job.get("queue", []))
 
     active_chunks = sum(
