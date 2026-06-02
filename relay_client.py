@@ -2699,8 +2699,41 @@ async def download_job_from_peer(
             f"peer={peer_id} "
             f"job={job_id}"
         )
-
         return None
+
+async def recover_missing_package(
+    job_id,
+    source=None
+):
+
+    zip_path = get_job_zip_path(job_id)
+
+    if os.path.exists(zip_path):
+        return
+
+    logger.info(
+        f"[Recovery] Missing package detected "
+        f"job={job_id}"
+    )
+
+    if source:
+
+        result = await download_job_from_peer(
+            source,
+            job_id
+        )
+
+        if result:
+            logger.info(
+                f"[Recovery] Package restored "
+                f"job={job_id}"
+            )
+            return
+
+    logger.warning(
+        f"[Recovery] Could not restore package "
+        f"job={job_id}"
+    )
 
 async def send_direct_or_relay(
     target,
@@ -2979,6 +3012,13 @@ async def handle_direct_peer_message(data):
             job_id,
             set()
         ).add(source or get_node_id())
+
+        asyncio.create_task(
+            recover_missing_package(
+                job_id,
+                source
+            )
+        )
 
         logger.info(
             f"[Manifest] Registered manifest "
