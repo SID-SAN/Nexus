@@ -2951,6 +2951,12 @@ async def handle_direct_peer_message(data):
                 manifest["package_hash"] = incoming_hash
                 job_manifest_registry[job_id] = manifest
 
+            asyncio.create_task(
+                recover_missing_package(
+                    job_id,
+                    source
+                )
+            )
             await broadcast_action(
                 "job_manifest",
                 manifest=manifest
@@ -3154,6 +3160,12 @@ async def handle_direct_peer_message(data):
                     continue
 
                 job_manifest_registry[job_id] = manifest
+                asyncio.create_task(
+                    recover_missing_package(
+                        job_id,
+                        source
+                    )
+                )
 
                 package_hash = manifest.get(
                     "package_hash"
