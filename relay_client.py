@@ -1231,7 +1231,7 @@ async def send_job_delta_sync(job_id):
         )
 
 async def cleanup_job_cache(job_id):
-    await asyncio.sleep(60)
+    await asyncio.sleep(24 * 60 * 60)
     state = job_cache.get(job_id)
     if not state:
         return
@@ -2546,6 +2546,12 @@ async def serve_job_package(request):
 
     zip_path = get_job_zip_path(job_id)
 
+    logger.info(
+        f"[PackageDebug] job={job_id} "
+        f"path={zip_path} "
+        f"exists={os.path.exists(zip_path)}"
+    )
+
     if not os.path.exists(zip_path):
 
         return web.Response(
@@ -2777,7 +2783,27 @@ async def send_direct_or_relay(
 
     await enqueue_message(payload)
 
-        
+async def replicate_package(job_id, source):
+
+    await asyncio.sleep(5)
+
+    zip_path = get_job_zip_path(job_id)
+
+    if not os.path.exists(zip_path):
+        return
+
+    package_registry.setdefault(
+        job_id,
+        set()
+    ).add(get_node_id())
+
+    await broadcast_action(
+        "package_available",
+        job_id=job_id,
+        peer_id=get_node_id(),
+        package_hash=package_hash_registry.get(job_id)
+    )      
+
 async def handle_direct_peer_message(data):
     global verify_success_count, verify_mismatch_count
 
@@ -2951,12 +2977,27 @@ async def handle_direct_peer_message(data):
                 manifest["package_hash"] = incoming_hash
                 job_manifest_registry[job_id] = manifest
 
+            zip_path = get_job_zip_path(job_id)
+            if not os.path.exists(zip_path):
+                asyncio.create_task(
+                    recover_missing_package(
+                        job_id,
+                        source
+                    )
+                )
+
             asyncio.create_task(
                 recover_missing_package(
                     job_id,
                     source
                 )
             )
+
+            package_registry.setdefault(
+                job_id,
+                set()
+            ).add(source)
+
             await broadcast_action(
                 "job_manifest",
                 manifest=manifest
@@ -3021,6 +3062,13 @@ async def handle_direct_peer_message(data):
 
         asyncio.create_task(
             recover_missing_package(
+                job_id,
+                source
+            )
+        )
+
+        asyncio.create_task(
+            replicate_package(
                 job_id,
                 source
             )
