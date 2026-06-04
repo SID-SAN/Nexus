@@ -2603,15 +2603,20 @@ async def download_job_from_peer(
     peer_id,
     job_id
 ):
-    temp_zip = None
+    if peer_id == get_node_id():
+        logger.warning(
+            f"[Recovery] Ignoring self download "
+            f"job={job_id}"
+        )
+        return None
 
+    temp_zip = None
     peer_info = peer_address_cache.get(
         peer_id,
         {}
     )
 
     host = peer_info.get("host")
-
     package_port = peer_info.get(
         "package_port",
         PACKAGE_SERVER_PORT
@@ -2632,21 +2637,15 @@ async def download_job_from_peer(
     )
 
     try:
-
         timeout = ClientTimeout(total=60)
-
         async with ClientSession(timeout=timeout) as session:
-
             async with session.get(url) as response:
-
                 if response.status != 200:
-
                     logger.warning(
                         f"[Package] Peer download failed "
                         f"peer={peer_id} "
                         f"status={response.status}"
                     )
-
                     return None
 
                 zip_path = get_job_zip_path(job_id)
@@ -2658,9 +2657,7 @@ async def download_job_from_peer(
                 )
 
                 with open(temp_zip, "wb") as handle:
-
                     async for chunk in response.content.iter_chunked(65536):
-
                         handle.write(chunk)
 
                 os.replace(temp_zip, zip_path)
