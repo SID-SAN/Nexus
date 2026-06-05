@@ -11,6 +11,7 @@ import uuid
 import hashlib
 import zipfile
 import shutil
+import threading
 from websockets import exceptions as ws_exceptions
 from urllib.parse import quote
 from node.downloader import download_job as download_job_from_relay
@@ -41,6 +42,9 @@ metrics_lock = asyncio.Lock()
 claim_lock = asyncio.Lock()
 active_chunks_lock = asyncio.Lock()
 runtime_state_lock = asyncio.Lock()
+peer_cache_lock = threading.Lock()
+local_verifications_lock = threading.Lock()
+claims_lock = threading.Lock()
 current_relay = None
 current_relay_url = None
 executing_tasks = 0
@@ -285,49 +289,51 @@ def _serialize_owned_claims():
     return serialized
 
 def save_local_verifications():
-    os.makedirs(os.path.dirname(LOCAL_VERIFICATIONS_FILE), exist_ok=True)
-    payload = {"verifications": _serialize_local_verifications()}
-    temp_path = f"{LOCAL_VERIFICATIONS_FILE}.tmp"
+    with local_verifications_lock:
+        os.makedirs(os.path.dirname(LOCAL_VERIFICATIONS_FILE), exist_ok=True)
+        payload = {"verifications": _serialize_local_verifications()}
+        temp_path = f"{LOCAL_VERIFICATIONS_FILE}.tmp"
 
-    try:
-        with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, default=str)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, LOCAL_VERIFICATIONS_FILE)
-    except Exception:
-        logger.exception("[VERIFY] Failed to persist local verifications")
         try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, default=str)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, LOCAL_VERIFICATIONS_FILE)
+        except Exception:
+            logger.exception("[VERIFY] Failed to persist local verifications")
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
 
 def save_owned_claims():
-    os.makedirs(os.path.dirname(LOCAL_CLAIMS_FILE), exist_ok=True)
+    with claims_lock:
+        os.makedirs(os.path.dirname(LOCAL_CLAIMS_FILE), exist_ok=True)
 
-    payload = {
-        "claims": _serialize_owned_claims()
-    }
+        payload = {
+            "claims": _serialize_owned_claims()
+        }
 
-    temp_path = f"{LOCAL_CLAIMS_FILE}.tmp"
-
-    try:
-        with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, default=str)
-            handle.flush()
-            os.fsync(handle.fileno())
-
-        os.replace(temp_path, LOCAL_CLAIMS_FILE)
-
-    except Exception:
-        logger.exception("[Claims] Failed to persist owned claims")
+        temp_path = f"{LOCAL_CLAIMS_FILE}.tmp"
 
         try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, default=str)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            os.replace(temp_path, LOCAL_CLAIMS_FILE)
+
+        except Exception:
+            logger.exception("[Claims] Failed to persist owned claims")
+
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
 
 def load_local_verifications():
     if not os.path.exists(LOCAL_VERIFICATIONS_FILE):
@@ -446,41 +452,42 @@ def load_owned_claims():
         )
 
 def save_peer_cache():
+        
+    with peer_cache_lock:
 
-    os.makedirs(
-        os.path.dirname(PEER_CACHE_FILE),
-        exist_ok=True
-    )
-
-    payload = {
-        "peers": peer_address_cache
-    }
-
-    temp_path = f"{PEER_CACHE_FILE}.tmp"
-
-    try:
-
-        with open(temp_path, "w", encoding="utf-8") as handle:
-
-            json.dump(payload, handle)
-
-            handle.flush()
-            os.fsync(handle.fileno())
-
-        os.replace(temp_path, PEER_CACHE_FILE)
-
-    except Exception:
-
-        logger.exception(
-            "[Peers] Failed to save peer cache"
+        os.makedirs(
+            os.path.dirname(PEER_CACHE_FILE),
+            exist_ok=True
         )
 
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        payload = {
+            "peers": peer_address_cache
+        }
 
+        temp_path = f"{PEER_CACHE_FILE}.tmp"
+
+        try:
+
+            with open(temp_path, "w", encoding="utf-8") as handle:
+
+                json.dump(payload, handle)
+
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            os.replace(temp_path, PEER_CACHE_FILE)
+
+        except Exception:
+
+            logger.exception(
+                "[Peers] Failed to save peer cache"
+            )
+
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
 
 def load_peer_cache():
 
@@ -2975,6 +2982,7 @@ async def handle_direct_peer_message(data):
                 job_manifest_registry[job_id] = manifest
 
             zip_path = get_job_zip_path(job_id)
+
             if not os.path.exists(zip_path):
                 asyncio.create_task(
                     recover_missing_package(
@@ -2982,13 +2990,6 @@ async def handle_direct_peer_message(data):
                         source
                     )
                 )
-
-            asyncio.create_task(
-                recover_missing_package(
-                    job_id,
-                    source
-                )
-            )
 
             package_registry.setdefault(
                 job_id,
