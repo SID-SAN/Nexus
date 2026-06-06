@@ -17,8 +17,6 @@ PORT = int(os.getenv("PORT", 5001))
 
 RELAY_URLS = ["https://nexus-relay-5wog.onrender.com"]
 
-PORT = int(os.getenv("PORT", 5001))
-
 PEER_PORT = int(
     os.getenv("PEER_PORT", get_free_port())
 )
