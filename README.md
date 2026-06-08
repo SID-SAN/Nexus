@@ -142,13 +142,13 @@ Used to validate resilience under real-world distributed system failures.
 Nexus provides a public relay for testing and development:
 
 ```text
-https://nexus-relay-5wog.onrender.com
+https://nexus-wr6s.onrender.com
 ```
 
 Dashboard:
 
 ```text
-https://nexus-relay-5wog.onrender.com/dashboard
+https://nexus-wr6s.onrender.com/dashboard
 ```
 
 You can join the network without hosting your own relay.
@@ -210,7 +210,7 @@ docker build -t nexus-base .
 Open:
 
 ```text
-https://nexus-relay-5wog.onrender.com/dashboard
+https://nexus-wr6s.onrender.com/dashboard
 ```
 
 Click:
@@ -264,7 +264,7 @@ python nexus_node.py start --node-id PC_1 --api-key user_A_key
 Expected output:
 
 ```text
-[Relay] Connected to https://nexus-relay-5wog.onrender.com
+[Relay] Connected to https://nexus-wr6s.onrender.com
 [PeerMesh] Direct peer server started
 [System] Nexus node active
 ```
@@ -386,7 +386,7 @@ job.zip
 Open Dashboard:
 
 ```text
-https://nexus-relay-5wog.onrender.com/dashboard
+https://nexus-wr6s.onrender.com/dashboard
 ```
 
 Login.
