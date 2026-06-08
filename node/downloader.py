@@ -70,18 +70,7 @@ def download_job(job_id):
             if chunk:
                 f.write(chunk)
 
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            safe_extract(zip_ref, extract_path)
-        return extract_path
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        safe_extract(zip_ref, extract_path)
 
-    finally:
-        if os.path.exists(zip_path):
-            for _ in range(5):
-                try:
-                    os.remove(zip_path)
-                    break
-                except PermissionError:
-                    time.sleep(0.2)
-            else:
-                print(f"[WARN] Could not delete zip after extraction: {zip_path}")
+    return extract_path

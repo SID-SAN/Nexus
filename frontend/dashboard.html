@@ -92,35 +92,64 @@
 </div>
 
 <!-- Stats -->
-<div class="grid grid-cols-4 gap-4 mb-6">
+<div class="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4 mb-6">
   <div class="bg-slate-800 p-4 rounded">
-    Nodes: <span id="nodeCount">0</span>
+    Connected Nodes: <span id="connectedNodesCount">0</span>
   </div>
   <div class="bg-slate-800 p-4 rounded">
-    Jobs: <span id="jobCount">0</span>
+    Active Jobs: <span id="activeJobsCount">0</span>
   </div>
   <div class="bg-slate-800 p-4 rounded">
-    Running: <span id="runningCount">0</span>
+    Active Claims: <span id="activeClaimsCount">0</span>
   </div>
   <div class="bg-slate-800 p-4 rounded">
-    Speed: <span id="avgSpeed">0</span>
+    Active Chunks: <span id="activeChunksCount">0</span>
+  </div>
+  <div class="bg-slate-800 p-4 rounded">
+    Verification Success: <span id="verificationSuccessCount">0%</span>
+  </div>
+  <div class="bg-slate-800 p-4 rounded">
+    Verify Mismatches: <span id="verificationMismatchCount">0</span>
+  </div>
+  <div class="bg-slate-800 p-4 rounded">
+    Claim Recoveries: <span id="claimRecoveryCount">0</span>
+  </div>
+  <div class="bg-slate-800 p-4 rounded">
+    Duplicate Completions: <span id="duplicateCompletionCount">0</span>
   </div>
 </div>
 
 <!-- Nodes -->
 <h3 class="mb-2">Nodes</h3>
-<div id="nodes" class="grid grid-cols-3 gap-4 mb-6"></div>
+<div class="bg-slate-800 rounded mb-6 overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-t border-slate-700">
+        <th class="p-2 text-left">Node</th>
+        <th class="p-2 text-left">Status</th>
+        <th class="p-2 text-left">Active Chunks</th>
+        <th class="p-2 text-left">Peers</th>
+        <th class="p-2 text-left">Last Seen</th>
+      </tr>
+    </thead>
+    <tbody id="nodeBody"></tbody>
+  </table>
+</div>
 
 <!-- Jobs -->
 <h3 class="mb-2">Jobs</h3>
-<div class="bg-slate-800 rounded">
+<div class="bg-slate-800 rounded overflow-x-auto">
   <table class="w-full text-sm">
     <thead>
       <tr class="border-t border-slate-700 hover:bg-slate-800 transition">
         <th class="p-2">Name</th>
         <th class="p-2">ID</th>
         <th>Status</th>
-        <th>Progress</th>
+        <th>Completed</th>
+        <th>Active Claims</th>
+        <th>Recovery</th>
+        <th>Verify Mismatch</th>
+        <th>Exec Progress</th>
         <th>Duration</th>
         <th>Speed</th>
         <th></th>
@@ -166,7 +195,7 @@ let pollInterval = null;
 function startPolling() {
   if (pollInterval) return;
 
-  pollInterval = setInterval(pollDashboard, 4000);
+  pollInterval = setInterval(pollDashboard, 3000);
 }
 
 function stopPolling() {
@@ -255,72 +284,73 @@ async function fetchCredits() {
 }
 
 // 🖥️ NODES
-function updateNodes(nodes) {
+function statusBadgeClass(status) {
+  switch ((status || "IDLE").toUpperCase()) {
+    case "EXECUTING":
+      return "bg-blue-500/20 text-blue-300";
+    case "VERIFYING":
+      return "bg-purple-500/20 text-purple-300";
+    case "RECOVERING":
+      return "bg-orange-500/20 text-orange-300";
+    case "DISCONNECTED":
+      return "bg-red-500/20 text-red-300";
+    case "IDLE":
+    default:
+      return "bg-slate-500/20 text-slate-300";
+  }
+}
 
-  if (!nodes.connected_nodes || nodes.connected_nodes.length === 0) {
-    document.getElementById("nodes").innerHTML = "<p class='text-slate-400'>No nodes connected</p>";
+function formatLastSeen(ageSeconds) {
+  const value = Number(ageSeconds || 0);
+  if (value < 1) return "just now";
+  return `${value}s ago`;
+}
+
+// NODES
+function updateNodes(metrics) {
+  const rows = Array.isArray(metrics?.nodes) ? metrics.nodes : [];
+
+  if (rows.length === 0) {
+    document.getElementById("nodeBody").innerHTML =
+      "<tr><td class='p-2 text-slate-400' colspan='5'>No nodes tracked</td></tr>";
     return;
   }
 
-  document.getElementById("nodes").innerHTML =
-    nodes.connected_nodes.map(n => {
-
-      const cpu = n.cpu || 0;
-      const ram = n.ram || 0;
-
-      const cpuColor =
-        cpu > 80 ? "bg-red-500" :
-        cpu > 50 ? "bg-yellow-400" :
-        "bg-green-400";
-
-      const ramColor =
-        ram > 80 ? "bg-red-500" :
-        ram > 50 ? "bg-yellow-400" :
-        "bg-blue-400";
-
+  document.getElementById("nodeBody").innerHTML =
+    rows.map(n => {
+      const status = (n.status || "IDLE").toUpperCase();
       return `
-      <div class="bg-slate-800 rounded shadow-md p-3">
-
-        <div class="flex justify-between items-center mb-2">
-          <span>${n.id}</span>
-        </div>
-
-        <div class="text-xs text-slate-400">
-          CPU: ${cpu}% | RAM: ${ram}%
-        </div>
-
-        <div class="mt-2 h-2 bg-slate-700 rounded">
-          <div class="h-full ${cpuColor}" style="width:${cpu}%"></div>
-        </div>
-
-        <div class="mt-1 h-2 bg-slate-700 rounded">
-          <div class="h-full ${ramColor}" style="width:${ram}%"></div>
-        </div>
-
-      </div>
+      <tr class="border-t border-slate-700">
+        <td class="p-2">${n.id}</td>
+        <td class="p-2">
+          <span class="px-2 py-1 rounded text-xs ${statusBadgeClass(status)}">${status}</span>
+        </td>
+        <td class="p-2">${n.active_chunks ?? 0}</td>
+        <td class="p-2">${n.known_peers ?? 0}</td>
+        <td class="p-2 text-slate-300">${formatLastSeen(n.last_seen_age)}</td>
+      </tr>
       `;
     }).join("");
 }
 
-// 📦 JOBS
+// JOBS
 function updateJobs(jobs) {
-
   if (!jobs || Object.keys(jobs).length === 0) {
     document.getElementById("jobBody").innerHTML =
-      "<tr><td colspan='7'>No jobs</td></tr>";
+      "<tr><td colspan='11' class='p-2 text-slate-400'>No jobs</td></tr>";
     return;
   }
 
   document.getElementById("jobBody").innerHTML =
     Object.entries(jobs).map(([id, j]) => {
-
-      let pct = (j.total && j.total > 0)
+      const pct = (j.total && j.total > 0)
         ? Math.round((j.completed / j.total) * 100)
         : 0;
       const statusClass =
         j.status === "completed" ? "text-green-400" :
         j.status === "failed" ? "text-red-400" :
         "text-yellow-400";
+      const execProgress = Number(j.execution_progress || pct).toFixed(1);
 
       return `
       <tr class="border-t border-slate-700 cursor-pointer hover:bg-slate-800/60 transition"
@@ -328,20 +358,22 @@ function updateJobs(jobs) {
         <td class="p-2">${j.name || "Untitled"}</td>
         <td class="p-2">${id.slice(0,8)}</td>
         <td class="${statusClass}">${j.status}</td>
-        <td>
-          <div class="bg-slate-700 h-2 w-20 inline-block">
+        <td class="p-2">${j.completed}/${j.total}</td>
+        <td class="p-2">${j.active_claims ?? 0}</td>
+        <td class="p-2">${j.recovery_count ?? 0}</td>
+        <td class="p-2">${j.verification_mismatches ?? 0}</td>
+        <td class="p-2">
+          <div class="bg-slate-700 h-2 w-24 inline-block mr-2 align-middle">
             <div class="bg-indigo-400 h-2" style="width:${pct}%"></div>
           </div>
-          ${j.completed}/${j.total}
+          ${execProgress}%
         </td>
-        <td>${j.duration}s</td>
-        <td>${j.speed} chunks/s</td>
-        <td>
+        <td class="p-2">${j.duration}s</td>
+        <td class="p-2">${j.speed} chunks/s</td>
+        <td class="p-2">
           <button onclick="event.stopPropagation(); viewLogs('${id}')">Logs</button>
-
           ${(j.status || "").toLowerCase().trim() === "running"
             ? `<button onclick="event.stopPropagation(); cancelJob('${id}')">Cancel</button>` : ""}
-
           ${(j.status || "").toLowerCase().trim() === "completed"
             ? `<button onclick="event.stopPropagation(); viewResult('${id}')">Result</button>` : ""}
         </td>
@@ -350,34 +382,25 @@ function updateJobs(jobs) {
     }).join("");
 }
 
-// 📊 STATS
-function updateStats(nodes, jobs) {
-
-  document.getElementById("nodeCount").innerText =
-    (nodes.connected_nodes || []).length;
-
-  document.getElementById("jobCount").innerText =
-    Object.keys(jobs || {}).length;
-
-  let running = 0;
-  let speed = 0;
-
-  Object.values(jobs || {}).forEach(j => {
-    if (j.status === "running") {
-      running++;
-      speed += j.speed || 0;
-    }
-  });
-
-  document.getElementById("runningCount").innerText = running;
-  const avg = running > 0
-    ? (speed / running).toFixed(2)
-    : "0.00";
-
-  document.getElementById("avgSpeed").innerText =
-    avg + " chunks/s";
+// STATS
+function updateStats(metrics) {
+  document.getElementById("connectedNodesCount").innerText =
+    metrics.connected_nodes ?? 0;
+  document.getElementById("activeJobsCount").innerText =
+    metrics.active_jobs ?? 0;
+  document.getElementById("activeClaimsCount").innerText =
+    metrics.active_claims ?? 0;
+  document.getElementById("activeChunksCount").innerText =
+    metrics.active_chunks ?? 0;
+  document.getElementById("verificationSuccessCount").innerText =
+    `${Number(metrics.verification_success_rate ?? 0).toFixed(1)}%`;
+  document.getElementById("verificationMismatchCount").innerText =
+    metrics.verification_mismatches ?? 0;
+  document.getElementById("claimRecoveryCount").innerText =
+    metrics.claim_recovery_count ?? 0;
+  document.getElementById("duplicateCompletionCount").innerText =
+    metrics.duplicate_completion_count ?? 0;
 }
-
 // ❌ CANCEL
 async function cancelJob(id) {
   const apiKey = localStorage.getItem("api_key");
@@ -539,25 +562,37 @@ async function pollDashboard() {
     if (!apiKey) {
       stopPolling();
 
-      updateNodes({ connected_nodes: [] });
+      const emptyMetrics = {
+        connected_nodes: 0,
+        active_jobs: 0,
+        active_claims: 0,
+        active_chunks: 0,
+        verification_success_rate: 0,
+        verification_mismatches: 0,
+        claim_recovery_count: 0,
+        duplicate_completion_count: 0,
+        nodes: []
+      };
+
+      updateNodes(emptyMetrics);
       updateJobs({});
-      updateStats({ connected_nodes: [] }, {});
+      updateStats(emptyMetrics);
       document.getElementById("credits").innerText = "-";
 
       return;
     }
 
-    const [nodesRes, jobsRes] = await Promise.all([
-      fetch("/cluster_status"),
+    const [metricsRes, jobsRes] = await Promise.all([
+      fetch("/cluster_metrics"),
       fetch("/all_jobs?api_key=" + apiKey)
     ]);
 
-    const nodes = await nodesRes.json();
+    const metrics = await metricsRes.json();
     const jobs = await jobsRes.json();
 
-    updateNodes(nodes);
+    updateNodes(metrics);
     updateJobs(jobs);
-    updateStats(nodes, jobs);
+    updateStats(metrics);
     await fetchCredits();
 
   } catch (err) {
@@ -570,3 +605,4 @@ if (localStorage.getItem("api_key")) {
 </script>
 </body>
 </html>
+
